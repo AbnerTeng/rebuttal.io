@@ -116,23 +116,6 @@ Browser
 | Auth | Custom (bcrypt + JWT session cookies) |
 | Process manager | Docker |
 
----
-
-## Project structure
-
-```
-.
-├── src/
-│   ├── server.ts      # Express + Socket.io server
-│   └── types.ts       # Shared TypeScript types
-├── public/
-│   └── index.html     # Single-page frontend
-├── Dockerfile
-├── docker-compose.yml
-├── .env.example
-├── tsconfig.json
-└── package.json
-```
 
 ---
 
