@@ -308,6 +308,35 @@
   .toast.error { background: var(--red); color: #2a0a0a; }
   @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
+  /* ── Auth overlay ── */
+  .auth-overlay {
+    position: fixed; inset: 0; background: var(--bg);
+    display: flex; align-items: center; justify-content: center; z-index: 300;
+  }
+  .auth-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 32px; max-width: 420px; width: 90%; text-align: center;
+  }
+  .auth-card h2 { font-size: 1.1rem; font-weight: 600; margin-bottom: 6px; }
+  .auth-card p  { font-size: 0.82rem; color: var(--text-muted); margin-bottom: 20px; }
+
+  /* ── Share modal ── */
+  .share-url-row { display: flex; gap: 6px; margin-top: 10px; }
+  .share-url-row input {
+    flex: 1; background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); border-radius: var(--radius); padding: 7px 10px; font-size: 0.78rem;
+  }
+
+  /* ── User chip ── */
+  .user-chip {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 0.78rem; color: var(--text-muted);
+  }
+  .user-avatar {
+    width: 24px; height: 24px; border-radius: 50%; object-fit: cover;
+    background: var(--surface2); border: 1px solid var(--border);
+  }
+
   /* Scrollbar */
   ::-webkit-scrollbar { width: 5px; height: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -323,6 +352,15 @@
 </style>
 </head>
 <body>
+<!-- Auth overlay (hidden after sign-in) -->
+<div class="auth-overlay" id="authOverlay" style="display:none">
+  <div class="auth-card">
+    <h2>Rebuttal Assistant</h2>
+    <p>Sign in to access your rebuttals.</p>
+    <div id="clerkSignIn"></div>
+  </div>
+</div>
+
 <div class="app" id="app">
 
   <!-- Top bar -->
@@ -340,7 +378,13 @@
       <button class="btn btn-ghost btn-sm" id="historyBtn" onclick="openHistory()" style="display:none">&#128336; History</button>
       <button class="btn btn-primary btn-sm" id="saveBtn" onclick="saveRebuttal()">&#8593; Save</button>
       <button class="btn btn-ghost btn-sm" onclick="exportAll()">Export</button>
+      <button class="btn btn-ghost btn-sm" id="shareBtn" onclick="openShareModal()" style="display:none">&#128279; Share</button>
       <button class="btn btn-ghost btn-sm" id="themeBtn" onclick="toggleTheme()" title="Toggle light/dark mode">&#9788;</button>
+      <div class="user-chip" id="userChip" style="display:none">
+        <img class="user-avatar" id="userAvatar" src="" alt="">
+        <span id="userName"></span>
+        <button class="btn btn-ghost btn-sm" style="padding:3px 7px;font-size:0.72rem" onclick="signOut()">Sign out</button>
+      </div>
     </div>
   </div>
 
@@ -381,6 +425,22 @@
           <span class="hint">Use the Projects panel or "+ New Rebuttal"</span>
         </div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- Share modal -->
+<div class="modal-overlay" id="shareModal" style="display:none">
+  <div class="modal" style="max-width:480px">
+    <h3>&#128279; Share Rebuttal</h3>
+    <p style="font-size:0.8rem;color:var(--text-muted)">Anyone with this link can view and edit this rebuttal. Link expires in 7 days.</p>
+    <div class="share-url-row">
+      <input id="shareUrlInput" readonly placeholder="Generating link…">
+      <button class="btn btn-primary btn-sm" onclick="copyShareUrl()">Copy</button>
+    </div>
+    <p id="shareError" style="font-size:0.78rem;color:var(--red);display:none"></p>
+    <div class="modal-actions" style="margin-top:8px">
+      <button class="btn btn-ghost" onclick="document.getElementById('shareModal').style.display='none'">Close</button>
     </div>
   </div>
 </div>
@@ -437,6 +497,7 @@
   </div>
 </div>
 
+<script src="/clerk.js"></script>
 <script src="/socket.io/socket.io.js"></script>
 <script>
 // ── Theme ────────────────────────────────────────────────────────────────────
@@ -456,6 +517,48 @@ function toggleTheme() {
 // ── Constants ───────────────────────────────────────────────────────────────
 const CHAR_LIMIT = 5000;
 const AUTOSAVE_DELAY = 2000; // ms debounce
+
+// ── Auth ─────────────────────────────────────────────────────────────────────
+let clerk = null;
+let skipAuth = true; // overwritten by /api/config
+
+async function initAuth() {
+  const config = await fetch('/api/config').then(r => r.json());
+  skipAuth = config.skipAuth;
+
+  if (skipAuth) {
+    document.getElementById('userChip').style.display = 'none';
+    return;
+  }
+
+  clerk = new Clerk(config.clerkPublishableKey);
+  await clerk.load();
+
+  if (!clerk.user) {
+    document.getElementById('authOverlay').style.display = 'flex';
+    clerk.mountSignIn(document.getElementById('clerkSignIn'), {
+      afterSignInUrl: window.location.href,
+      afterSignUpUrl: window.location.href,
+    });
+    return; // stop — page will reload after sign-in
+  }
+
+  // Show user chip
+  const user = clerk.user;
+  document.getElementById('userAvatar').src = user.imageUrl ?? '';
+  document.getElementById('userName').textContent = user.firstName ?? user.emailAddresses?.[0]?.emailAddress ?? '';
+  document.getElementById('userChip').style.display = 'flex';
+}
+
+async function getToken() {
+  if (skipAuth || !clerk) return null;
+  return await clerk.session?.getToken() ?? null;
+}
+
+async function signOut() {
+  if (clerk) await clerk.signOut();
+  window.location.reload();
+}
 
 // ── State ───────────────────────────────────────────────────────────────────
 let state = {
@@ -478,9 +581,10 @@ const SCORE_OPTIONS = ['', '-2', '-1', '0', '1', '2', '3', '4', '5', '6', '7', '
 const CLIENT_ID = Math.random().toString(36).slice(2);
 let socket = null;
 
-function initCollab(rebId) {
+async function initCollab(rebId) {
   if (!socket) {
-    socket = io();
+    const token = await getToken();
+    socket = io({ auth: { token } });
 
     socket.on('sync', ({ state: s }) => {
       applyRemoteState(s);
@@ -575,7 +679,10 @@ function renderPeers(peers) {
 
 // ── API helpers ─────────────────────────────────────────────────────────────
 async function api(method, path, body) {
-  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  const token = await getToken();
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  const opts = { method, headers };
   if (body !== undefined) opts.body = JSON.stringify(body);
   const res = await fetch(path, opts);
   if (!res.ok) {
@@ -734,6 +841,31 @@ function updateHistoryButtons() {
   const show = !!currentRebuttalId;
   document.getElementById('snapshotBtn').style.display = show ? '' : 'none';
   document.getElementById('historyBtn').style.display = show ? '' : 'none';
+  document.getElementById('shareBtn').style.display = show ? '' : 'none';
+}
+
+// ── Share ─────────────────────────────────────────────────────────────────────
+async function openShareModal() {
+  if (!currentRebuttalId) return;
+  const input = document.getElementById('shareUrlInput');
+  const errEl = document.getElementById('shareError');
+  input.value = 'Generating…';
+  errEl.style.display = 'none';
+  document.getElementById('shareModal').style.display = 'flex';
+  try {
+    const { url } = await api('POST', `/api/rebuttals/${currentRebuttalId}/invite`);
+    input.value = url;
+  } catch (e) {
+    input.value = '';
+    errEl.textContent = e.message;
+    errEl.style.display = '';
+  }
+}
+
+function copyShareUrl() {
+  const val = document.getElementById('shareUrlInput').value;
+  if (!val || val === 'Generating…') return;
+  navigator.clipboard.writeText(val).then(() => toast('Link copied!'));
 }
 
 // ── Snapshots ───────────────────────────────────────────────────────────────
@@ -1176,7 +1308,7 @@ function copyExport() {
 }
 
 // ── Close modals on overlay click ────────────────────────────────────────────
-['exportModal','snapshotModal','historyModal','previewModal'].forEach(id => {
+['exportModal','snapshotModal','historyModal','previewModal','shareModal'].forEach(id => {
   document.getElementById(id).addEventListener('click', function(e) {
     if (e.target === this) this.style.display = 'none';
   });
@@ -1188,15 +1320,33 @@ document.getElementById('snapshotNoteInput').addEventListener('keydown', e => {
 });
 
 // ── Init ─────────────────────────────────────────────────────────────────────
-updateSaveIndicator();
-updateHistoryButtons();
-renderSidebar();
-renderEditor();
-loadProjectsList();
-// sync theme button icon on load
-(function() {
+(async function() {
+  // sync theme button icon
   const theme = document.documentElement.getAttribute('data-theme');
   document.getElementById('themeBtn').textContent = theme === 'light' ? '☽' : '☀';
+
+  // Boot auth — may show sign-in overlay and stop here
+  await initAuth();
+  if (!skipAuth && !clerk?.user) return;
+
+  updateSaveIndicator();
+  updateHistoryButtons();
+  renderSidebar();
+  renderEditor();
+  await loadProjectsList();
+
+  // Auto-open rebuttal from URL: /?r=<id>
+  const urlId = new URLSearchParams(window.location.search).get('r');
+  if (urlId) {
+    // Clean URL without reloading
+    window.history.replaceState({}, '', '/');
+    await openRebuttal(parseInt(urlId));
+  }
+
+  // Close share modal on overlay click
+  document.getElementById('shareModal').addEventListener('click', function(e) {
+    if (e.target === this) this.style.display = 'none';
+  });
 })();
 </script>
 </body>

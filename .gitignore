@@ -10,6 +10,8 @@ node_modules/
 .env
 .env.local
 .env.*.local
+# keep the example
+!.env.example
 
 # Logs
 logs/
