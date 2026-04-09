@@ -47,7 +47,7 @@ DB_PATH=/data/rebuttals.db
 ### 2. Open firewall port (one time)
 
 ```bash
-sudo ufw allow 8886 && sudo ufw enable
+sudo ufw allow <your-port> && sudo ufw enable
 ```
 
 ### 3. Revise docker compose file
