@@ -23,19 +23,10 @@ Each person hosts their own instance. No shared server, no shared accounts.
 
 ### Prerequisites
 
-- A VPS with Docker installed (e.g. DigitalOcean, Hetzner, Fly.io)
-- A domain pointed at your server's IP
+- A machine with Docker installed and a publicly routable IP
 - A free [Clerk](https://clerk.com) account for authentication
 
-### 1. Point your domain to the server
-
-In your DNS settings, add an A record:
-
-| Type | Name | Value |
-|------|------|-------|
-| A | `@` | your server's IP address |
-
-### 2. Clone and configure
+### 1. Clone and configure
 
 ```bash
 git clone https://github.com/AbnerTeng/rebuttal.io.git
@@ -44,7 +35,7 @@ cp .env.example .env
 nano .env
 ```
 
-Fill in your Clerk keys and domain:
+Fill in your Clerk keys:
 
 ```dotenv
 CLERK_PUBLISHABLE_KEY=pk_live_...
@@ -54,29 +45,21 @@ DB_PATH=/data/rebuttals.db
 ```
 
 > **Getting Clerk keys:** [dashboard.clerk.com](https://dashboard.clerk.com) → create an app → **API Keys**.
-> Also add your domain to **Allowed Origins** and set **Home URL** to `https://yourdomain.com`.
+> Also add your host to **Allowed Origins** (e.g. `http://140.112.29.237:8886`) and set **Home URL** accordingly.
 
-### 3. Set your domain in Caddyfile
-
-```bash
-nano Caddyfile
-```
-
-Replace `your-domain.com` with your actual domain. That's the only line you need to change.
-
-### 4. Open firewall ports (one time)
+### 2. Open firewall port (one time)
 
 ```bash
-sudo ufw allow 22 && sudo ufw allow 80 && sudo ufw allow 443 && sudo ufw enable
+sudo ufw allow 8886 && sudo ufw enable
 ```
 
-### 5. Deploy
+### 3. Deploy
 
 ```bash
 docker compose up -d
 ```
 
-Caddy automatically obtains and renews an HTTPS certificate. Your app is live at `https://yourdomain.com`.
+Your app is live at `http://<your-ip>:8886`.
 
 ### Updating
 
@@ -93,7 +76,7 @@ docker compose up -d --build
 git clone https://github.com/AbnerTeng/rebuttal.io.git
 cd rebuttal.io
 npm install
-cp .env.example .env   # SKIP_AUTH=false by default, set to true for local dev
+cp .env.example .env   # set SKIP_AUTH=true for local dev
 npm run dev
 ```
 
@@ -106,12 +89,12 @@ Open [http://localhost:3000](http://localhost:3000).
 ```
 Browser
   │
-  ├─ HTTPS (443) ──► Caddy ──► Node.js (3000)
-  │                                  │
-  └─ WebSocket (wss://) ─────────────┘
-                                     │
-                                SQLite DB
-                                (/data/rebuttals.db)
+  ├─ HTTP (8886) ──► Node.js (3000)
+  │                       │
+  └─ WebSocket ───────────┘
+                          │
+                     SQLite DB
+                     (/data/rebuttals.db)
 ```
 
 | Layer | Technology |
@@ -120,7 +103,6 @@ Browser
 | Real-time | Socket.io (WebSocket) |
 | Database | SQLite via better-sqlite3 |
 | Auth | Clerk |
-| Proxy + HTTPS | Caddy (auto cert) |
 | Process manager | Docker |
 
 ---
@@ -136,7 +118,6 @@ Browser
 │   └── index.html     # Single-page frontend
 ├── Dockerfile
 ├── docker-compose.yml
-├── Caddyfile
 ├── .env.example
 ├── tsconfig.json
 └── package.json
