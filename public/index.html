@@ -1,0 +1,1084 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ML Rebuttal Assistant</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #22263a;
+    --border: #2e3250;
+    --accent: #6c7ef8;
+    --accent2: #a78bfa;
+    --green: #34d399;
+    --red: #f87171;
+    --yellow: #fbbf24;
+    --text: #e2e8f0;
+    --text-muted: #7c84a3;
+    --radius: 8px;
+    --bg-green: #134e3a;
+    --bg-green2: #1e4a35;
+    --bg-yellow: #3b2f0a;
+    --bg-yellow2: #5a4a1a;
+    --bg-red: #3b1111;
+    --bg-red2: #5a1a1a;
+    --bg-red3: #5a1111;
+  }
+  [data-theme="light"] {
+    --bg: #f4f5f9;
+    --surface: #ffffff;
+    --surface2: #eef0f6;
+    --border: #d0d4e8;
+    --accent: #4a5cf0;
+    --accent2: #7c5ce8;
+    --green: #0d9f6e;
+    --red: #dc2626;
+    --yellow: #d97706;
+    --text: #1e2235;
+    --text-muted: #6b7280;
+    --bg-green: #d1fae5;
+    --bg-green2: #a7f3d0;
+    --bg-yellow: #fef3c7;
+    --bg-yellow2: #fde68a;
+    --bg-red: #fee2e2;
+    --bg-red2: #fecaca;
+    --bg-red3: #fca5a5;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { font-size: 18px; }
+  body { background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif; min-height: 100vh; }
+
+  /* ── Layout ── */
+  .app { display: flex; flex-direction: column; height: 100vh; }
+  .topbar {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 5px 18px;
+    display: flex; align-items: center; gap: 10px;
+    flex-wrap: wrap; flex-shrink: 0;
+  }
+  .topbar h1 { font-size: 0.95rem; font-weight: 600; color: var(--accent); white-space: nowrap; }
+  .topbar .paper-fields { display: flex; gap: 8px; flex: 1; flex-wrap: wrap; }
+  .topbar input {
+    background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); border-radius: var(--radius); padding: 6px 10px; font-size: 0.8rem;
+  }
+  .topbar input::placeholder { color: var(--text-muted); }
+  .topbar input:focus { outline: none; border-color: var(--accent); }
+  .topbar input.venue { width: 220px; }
+  .topbar input.paper-title { width: 220px; min-width: 120px; }
+  .topbar-actions { display: flex; gap: 6px; align-items: center; }
+  .save-indicator {
+    font-size: 0.72rem; color: var(--text-muted);
+    display: flex; align-items: center; gap: 4px;
+  }
+  .save-indicator.dirty { color: var(--yellow); }
+  .save-indicator.saved { color: var(--green); }
+
+  .main { display: flex; flex: 1; overflow: hidden; }
+
+  /* ── Projects panel ── */
+  .projects-panel {
+    width: 220px; background: var(--surface); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; flex-shrink: 0;
+    transition: width 0.2s;
+  }
+  .projects-panel.collapsed { width: 0; overflow: hidden; }
+  .projects-header {
+    padding: 10px 12px 6px;
+    display: flex; align-items: center; justify-content: space-between;
+    border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .projects-header span { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); }
+  .projects-list { flex: 1; overflow-y: auto; padding: 6px 8px; }
+  .project-item {
+    padding: 8px 10px; border-radius: var(--radius); cursor: pointer;
+    display: flex; flex-direction: column; gap: 2px; margin-bottom: 2px;
+    transition: background 0.15s; position: relative;
+  }
+  .project-item:hover { background: var(--surface2); }
+  .project-item.active { background: var(--surface2); box-shadow: inset 2px 0 0 var(--accent); }
+  .project-item .proj-title { font-size: 0.82rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+  .project-item .proj-meta { font-size: 0.68rem; color: var(--text-muted); }
+  .project-item .proj-venue { font-size: 0.68rem; color: var(--accent2); }
+  .proj-del {
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    opacity: 0; background: none; border: none; color: var(--red); cursor: pointer;
+    padding: 2px 5px; border-radius: 4px; font-size: 0.75rem;
+  }
+  .project-item:hover .proj-del { opacity: 0.7; }
+  .proj-del:hover { opacity: 1 !important; background: var(--bg-red); }
+  .projects-footer { padding: 8px; border-top: 1px solid var(--border); flex-shrink: 0; }
+
+  /* ── Reviewer sidebar ── */
+  .sidebar {
+    width: 195px; background: var(--surface); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; flex-shrink: 0;
+  }
+  .sidebar-header {
+    padding: 10px 12px 6px;
+    font-size: 0.72rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--text-muted);
+    display: flex; align-items: center; justify-content: space-between;
+    border-bottom: 1px solid var(--border);
+  }
+  .reviewer-list { flex: 1; overflow-y: auto; padding: 4px 6px; }
+  .reviewer-tab {
+    display: flex; align-items: center; gap: 6px;
+    padding: 7px 8px; border-radius: var(--radius);
+    cursor: pointer; margin-bottom: 2px; position: relative;
+    transition: background 0.15s;
+  }
+  .reviewer-tab:hover { background: var(--surface2); }
+  .reviewer-tab.active { background: var(--surface2); box-shadow: inset 2px 0 0 var(--accent); }
+  .reviewer-tab .rv-label { font-size: 0.82rem; font-weight: 500; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .reviewer-tab .score-badge { font-size: 0.68rem; padding: 1px 5px; border-radius: 10px; font-weight: 600; flex-shrink: 0; }
+  .score-accept     { background: var(--bg-green); color: var(--green); }
+  .score-borderline { background: var(--bg-yellow); color: var(--yellow); }
+  .score-reject     { background: var(--bg-red); color: var(--red); }
+  .score-neutral    { background: var(--surface2); color: var(--text-muted); }
+  .rv-delete { opacity: 0; background: none; border: none; color: var(--red); cursor: pointer; padding: 2px 4px; border-radius: 4px; font-size: 0.72rem; }
+  .reviewer-tab:hover .rv-delete { opacity: 0.7; }
+  .rv-delete:hover { opacity: 1 !important; background: var(--bg-red); }
+  .sidebar-footer { padding: 8px 6px; border-top: 1px solid var(--border); }
+
+  /* ── Editor ── */
+  .editor { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+  .editor-inner { flex: 1; display: flex; overflow: hidden; }
+  .empty-state {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    color: var(--text-muted); gap: 14px;
+  }
+  .empty-state svg { opacity: 0.3; }
+  .empty-state p { font-size: 0.9rem; }
+  .empty-state .hint { font-size: 0.78rem; color: var(--text-muted); opacity: 0.7; }
+
+  .rv-editor { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .rv-editor-header {
+    padding: 12px 18px 8px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex-shrink: 0;
+  }
+  .rv-editor-header h2 { font-size: 1.2rem; font-weight: 600; }
+  .rv-score-select, .rv-name-input {
+    background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); border-radius: var(--radius); padding: 4px 8px; font-size: 0.78rem;
+  }
+  .rv-name-input { width: 140px; }
+  .rv-score-select:focus, .rv-name-input:focus { outline: none; border-color: var(--accent); }
+  .char-limit-info { margin-left: auto; font-size: 0.72rem; color: var(--text-muted); }
+  .char-count.warn { color: var(--yellow); }
+  .char-count.over { color: var(--red); }
+
+  .opening-note-wrap { padding: 8px 18px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .opening-note-wrap .opening-hdr { display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px; }
+  .opening-note-wrap label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); }
+  .opening-note-wrap textarea {
+    width: 100%; resize: none;
+    background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+    border-radius: var(--radius); padding: 7px 10px; font-size: 0.8rem; font-family: inherit; line-height: 1.5;
+  }
+  .opening-note-wrap textarea:focus { outline: none; border-color: var(--accent); }
+
+  .points-wrap { flex: 1; overflow-y: auto; padding: 10px 18px 80px; }
+  .point-block {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); margin-bottom: 10px; overflow: hidden;
+    transition: border-color 0.15s;
+  }
+  .point-block.done { border-color: var(--bg-green2); }
+  .point-block.partial { border-color: var(--bg-yellow); }
+  .point-header {
+    display: flex; align-items: center; gap: 7px;
+    padding: 7px 10px; background: var(--surface2); border-bottom: 1px solid var(--border);
+  }
+  .point-type-select {
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); border-radius: 4px; padding: 2px 6px; font-size: 0.7rem;
+  }
+  .point-type-select:focus { outline: none; }
+  .point-label { font-size: 0.72rem; font-weight: 600; color: var(--accent2); }
+  .status-toggle {
+    background: none; border: 1px solid var(--border); color: var(--text-muted);
+    border-radius: 4px; padding: 2px 7px; font-size: 0.68rem; cursor: pointer; transition: all 0.15s;
+    min-width: 62px; text-align: center;
+  }
+  .status-toggle.done { background: var(--bg-green); border-color: var(--bg-green2); color: var(--green); }
+  .status-toggle.partial { background: var(--bg-yellow); border-color: var(--bg-yellow2); color: var(--yellow); }
+  .point-delete-btn {
+    background: none; border: none; color: var(--text-muted); cursor: pointer;
+    padding: 2px 5px; border-radius: 4px; font-size: 0.78rem; opacity: 0.5; transition: all 0.15s;
+  }
+  .point-delete-btn:hover { opacity: 1; color: var(--red); background: var(--bg-red); }
+  .point-body { display: grid; grid-template-columns: 1fr 1fr; }
+  .point-col { padding: 9px 12px; }
+  .point-col:first-child { border-right: 1px solid var(--border); }
+  .point-col label { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); display: block; margin-bottom: 3px; }
+  .point-col-hdr { display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px; }
+  .point-col-hdr label { margin-bottom: 0; }
+  .field-char-count { font-size: 0.66rem; color: var(--text-muted); }
+  .point-col textarea {
+    width: 100%; resize: vertical; min-height: 76px;
+    background: transparent; border: none; color: var(--text);
+    font-size: 0.8rem; font-family: inherit; line-height: 1.6;
+  }
+  .point-col textarea:focus { outline: none; }
+  .point-col textarea.response { color: var(--green); }
+  .add-point-btn {
+    width: 100%; padding: 7px; border: 1px dashed var(--border);
+    background: none; color: var(--text-muted); border-radius: var(--radius);
+    cursor: pointer; font-size: 0.8rem; transition: all 0.15s;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+  }
+  .add-point-btn:hover { border-color: var(--accent); color: var(--accent); background: rgba(108,126,248,0.05); }
+
+  .export-bar {
+    padding: 9px 18px; border-top: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px; background: var(--surface);
+    flex-wrap: wrap; flex-shrink: 0;
+  }
+  .export-bar .stats { font-size: 0.72rem; color: var(--text-muted); flex: 1; }
+
+
+  /* ── Buttons ── */
+  .btn {
+    padding: 8px 16px; border-radius: var(--radius); font-size: 0.88rem; cursor: pointer;
+    font-weight: 500; transition: all 0.15s; border: none; white-space: nowrap;
+  }
+  .btn-primary { background: var(--accent); color: white; }
+  .btn-primary:hover { background: #8090ff; }
+  .btn-ghost { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-sm { padding: 6px 11px; font-size: 0.82rem; }
+  .btn-danger { background: var(--bg-red); color: var(--red); border: 1px solid var(--bg-red2); }
+  .btn-danger:hover { background: var(--bg-red3); }
+
+  /* ── Modals ── */
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.72);
+    display: flex; align-items: center; justify-content: center; z-index: 100;
+  }
+  .modal {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 22px; width: 90%; max-width: 720px;
+    max-height: 82vh; display: flex; flex-direction: column; gap: 12px;
+  }
+  .modal-lg { max-width: 900px; }
+  .modal h3 { font-size: 0.95rem; font-weight: 600; }
+  .modal pre {
+    flex: 1; overflow-y: auto; background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 12px; font-size: 0.76rem;
+    font-family: 'Fira Mono', 'Consolas', monospace; line-height: 1.6; white-space: pre-wrap;
+    color: var(--text);
+  }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; flex-shrink: 0; }
+  .modal-body { flex: 1; overflow-y: auto; }
+
+  /* History list */
+  .history-list { display: flex; flex-direction: column; gap: 6px; }
+  .history-item {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 10px 14px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .history-item .hi-meta { flex: 1; }
+  .history-item .hi-date { font-size: 0.78rem; font-weight: 500; }
+  .history-item .hi-note { font-size: 0.72rem; color: var(--text-muted); margin-top: 2px; }
+  .history-item .hi-actions { display: flex; gap: 6px; }
+
+  /* Snapshot input */
+  .snapshot-row { display: flex; gap: 8px; align-items: center; }
+  .snapshot-row input {
+    flex: 1; background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); border-radius: var(--radius); padding: 6px 10px; font-size: 0.8rem;
+  }
+  .snapshot-row input::placeholder { color: var(--text-muted); }
+  .snapshot-row input:focus { outline: none; border-color: var(--accent); }
+
+  /* Toast */
+  .toast {
+    position: fixed; bottom: 24px; right: 24px;
+    background: var(--green); color: #0a2a1e;
+    padding: 9px 16px; border-radius: var(--radius);
+    font-size: 0.8rem; font-weight: 600; z-index: 200;
+    animation: fadeUp 0.2s ease;
+  }
+  .toast.error { background: var(--red); color: #2a0a0a; }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+  @media (max-width: 700px) {
+    .point-body { grid-template-columns: 1fr; }
+    .point-col:first-child { border-right: none; border-bottom: 1px solid var(--border); }
+    .projects-panel { width: 160px; }
+    .sidebar { width: 150px; }
+  }
+</style>
+</head>
+<body>
+<div class="app" id="app">
+
+  <!-- Top bar -->
+  <div class="topbar">
+    <h1>&#9881; Rebuttal</h1>
+    <button class="btn btn-ghost btn-sm" id="toggleProjectsBtn" onclick="toggleProjects()" title="Toggle Projects panel">&#128193; Projects</button>
+    <div class="paper-fields">
+      <input class="venue" id="venue" placeholder="Venue (e.g. NeurIPS 25)" oninput="onFieldChange()">
+      <input class="paper-title" id="paperTitle" placeholder="Paper title" oninput="onFieldChange()">
+    </div>
+    <div class="topbar-actions">
+      <span class="save-indicator" id="saveIndicator">&#8212;</span>
+      <button class="btn btn-ghost btn-sm" id="snapshotBtn" onclick="openSnapshotDialog()" style="display:none">&#128247; Snapshot</button>
+      <button class="btn btn-ghost btn-sm" id="historyBtn" onclick="openHistory()" style="display:none">&#128336; History</button>
+      <button class="btn btn-primary btn-sm" id="saveBtn" onclick="saveRebuttal()">&#8593; Save</button>
+      <button class="btn btn-ghost btn-sm" onclick="exportAll()">Export</button>
+      <button class="btn btn-ghost btn-sm" id="themeBtn" onclick="toggleTheme()" title="Toggle light/dark mode">&#9788;</button>
+    </div>
+  </div>
+
+  <div class="main">
+    <!-- Projects panel -->
+    <div class="projects-panel" id="projectsPanel">
+      <div class="projects-header">
+        <span>Saved Rebuttals</span>
+      </div>
+      <div class="projects-list" id="projectsList">
+        <div style="padding:16px 8px;font-size:0.78rem;color:var(--text-muted);text-align:center;">Loading…</div>
+      </div>
+      <div class="projects-footer">
+        <button class="btn btn-ghost btn-sm" style="width:100%" onclick="newRebuttal()">+ New Rebuttal</button>
+      </div>
+    </div>
+
+    <!-- Reviewer sidebar -->
+    <div class="sidebar">
+      <div class="sidebar-header">
+        Reviewers
+        <button class="btn btn-ghost btn-sm" style="padding:2px 7px;font-size:0.72rem;" onclick="addReviewer()">+ Add</button>
+      </div>
+      <div class="reviewer-list" id="reviewerList"></div>
+      <div class="sidebar-footer">
+        <button class="btn btn-ghost btn-sm" style="width:100%;font-size:0.72rem;" onclick="resetCurrentRebuttal()">Clear Reviewers</button>
+      </div>
+    </div>
+
+    <!-- Editor area -->
+    <div class="editor">
+      <div class="editor-inner" id="editorInner">
+        <div class="empty-state">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M9 12h6M9 16h6M7 4h10a2 2 0 012 2v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6a2 2 0 012-2z"/>
+          </svg>
+          <p>Open or create a rebuttal to get started</p>
+          <span class="hint">Use the Projects panel or "+ New Rebuttal"</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Export modal -->
+<div class="modal-overlay" id="exportModal" style="display:none">
+  <div class="modal modal-lg">
+    <h3>Rebuttal Export</h3>
+    <pre id="exportContent"></pre>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="document.getElementById('exportModal').style.display='none'">Close</button>
+      <button class="btn btn-primary" onclick="copyExport()">Copy to Clipboard</button>
+    </div>
+  </div>
+</div>
+
+<!-- Snapshot dialog -->
+<div class="modal-overlay" id="snapshotModal" style="display:none">
+  <div class="modal" style="max-width:420px">
+    <h3>&#128247; Save Snapshot</h3>
+    <p style="font-size:0.8rem;color:var(--text-muted)">Save a named checkpoint you can restore later.</p>
+    <div class="snapshot-row">
+      <input id="snapshotNoteInput" placeholder="Label (e.g. 'Before major edit', 'v1 draft')">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="document.getElementById('snapshotModal').style.display='none'">Cancel</button>
+      <button class="btn btn-primary" onclick="saveSnapshot()">Save Snapshot</button>
+    </div>
+  </div>
+</div>
+
+<!-- History modal -->
+<div class="modal-overlay" id="historyModal" style="display:none">
+  <div class="modal" style="max-width:600px">
+    <h3>&#128336; Version History</h3>
+    <div class="modal-body" id="historyBody">
+      <div style="color:var(--text-muted);font-size:0.82rem;text-align:center;padding:24px">Loading…</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="document.getElementById('historyModal').style.display='none'">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Snapshot preview modal -->
+<div class="modal-overlay" id="previewModal" style="display:none">
+  <div class="modal modal-lg">
+    <h3 id="previewTitle">Snapshot Preview</h3>
+    <pre id="previewContent"></pre>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="document.getElementById('previewModal').style.display='none'">Close</button>
+      <button class="btn btn-primary" id="restoreBtn" onclick="restoreSnapshot()">Restore This Version</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Theme ────────────────────────────────────────────────────────────────────
+(function() {
+  const saved = localStorage.getItem('theme') || 'dark';
+  document.documentElement.setAttribute('data-theme', saved);
+})();
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme');
+  const next = current === 'light' ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('theme', next);
+  document.getElementById('themeBtn').textContent = next === 'light' ? '☽' : '☀';
+}
+
+// ── Constants ───────────────────────────────────────────────────────────────
+const CHAR_LIMIT = 5000;
+const AUTOSAVE_DELAY = 2000; // ms debounce
+
+// ── State ───────────────────────────────────────────────────────────────────
+let state = {
+  venue: '',
+  paperTitle: '',
+  reviewers: [],
+  activeId: null,
+};
+
+let currentRebuttalId = null;
+let isDirty = false;
+let autoSaveTimer = null;
+let previewSnapshotId = null;
+let projectsPanelOpen = true;
+let nextId = 1;
+
+const SCORE_OPTIONS = ['', '-2', '-1', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'];
+
+// ── API helpers ─────────────────────────────────────────────────────────────
+async function api(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body !== undefined) opts.body = JSON.stringify(body);
+  const res = await fetch(path, opts);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || 'Request failed');
+  }
+  return res.json();
+}
+
+// ── Projects ────────────────────────────────────────────────────────────────
+async function loadProjectsList() {
+  try {
+    const list = await api('GET', '/api/rebuttals');
+    renderProjectsList(list);
+  } catch (e) {
+    document.getElementById('projectsList').innerHTML =
+      `<div style="padding:12px 8px;font-size:0.78rem;color:var(--red)">Error: ${e.message}</div>`;
+  }
+}
+
+function renderProjectsList(list) {
+  const el = document.getElementById('projectsList');
+  if (!list.length) {
+    el.innerHTML = `<div style="padding:16px 8px;font-size:0.78rem;color:var(--text-muted);text-align:center">No saved rebuttals yet</div>`;
+    return;
+  }
+  el.innerHTML = list.map(r => `
+    <div class="project-item ${r.id === currentRebuttalId ? 'active' : ''}" onclick="openRebuttal(${r.id})">
+      <div class="proj-title">${escHtml(r.title || 'Untitled')}</div>
+      ${r.venue ? `<div class="proj-venue">${escHtml(r.venue)}</div>` : ''}
+      <div class="proj-meta">${fmtDate(r.updated_at)}</div>
+      <button class="proj-del" onclick="event.stopPropagation();deleteRebuttal(${r.id})" title="Delete">✕</button>
+    </div>
+  `).join('');
+}
+
+function toggleProjects() {
+  projectsPanelOpen = !projectsPanelOpen;
+  document.getElementById('projectsPanel').classList.toggle('collapsed', !projectsPanelOpen);
+}
+
+async function newRebuttal() {
+  if (isDirty && currentRebuttalId && !confirm('You have unsaved changes. Continue?')) return;
+  currentRebuttalId = null;
+  isDirty = false;
+  nextId = 1;
+  state = {
+    venue: '', paperTitle: '',
+    reviewers: [], activeId: null,
+  };
+  document.getElementById('venue').value = '';
+  document.getElementById('paperTitle').value = '';
+  updateSaveIndicator();
+  updateHistoryButtons();
+  renderSidebar();
+  renderEditor();
+  loadProjectsList();
+}
+
+async function openRebuttal(id) {
+  if (isDirty && currentRebuttalId && !confirm('You have unsaved changes. Continue?')) return;
+  try {
+    const row = await api('GET', `/api/rebuttals/${id}`);
+    currentRebuttalId = row.id;
+    const s = row.data;
+    // recalc nextId
+    const allIds = [...(s.reviewers||[]).map(r=>r.id), ...(s.reviewers||[]).flatMap(r=>(r.points||[]).map(p=>p.id))];
+    nextId = allIds.length ? Math.max(...allIds) : 1;
+
+    state = {
+      venue: row.venue || '',
+      paperTitle: row.title || '',
+      reviewers: s.reviewers || [],
+      activeId: s.activeId || (s.reviewers && s.reviewers[0]?.id) || null,
+    };
+    document.getElementById('venue').value = state.venue;
+    document.getElementById('paperTitle').value = state.paperTitle;
+    isDirty = false;
+    updateSaveIndicator();
+    updateHistoryButtons();
+    renderSidebar();
+    renderEditor();
+    loadProjectsList();
+  } catch (e) {
+    toast('Failed to load: ' + e.message, true);
+  }
+}
+
+async function saveRebuttal() {
+  const title = state.paperTitle || document.getElementById('paperTitle').value || 'Untitled';
+  const venue = state.venue || document.getElementById('venue').value || '';
+  const data = { ...state };
+
+  try {
+    if (currentRebuttalId) {
+      await api('PUT', `/api/rebuttals/${currentRebuttalId}`, { title, venue, data });
+    } else {
+      const row = await api('POST', '/api/rebuttals', { title, venue, data });
+      currentRebuttalId = row.id;
+    }
+    isDirty = false;
+    updateSaveIndicator();
+    updateHistoryButtons();
+    loadProjectsList();
+    toast('Saved');
+  } catch (e) {
+    toast('Save failed: ' + e.message, true);
+  }
+}
+
+async function deleteRebuttal(id) {
+  if (!confirm('Delete this rebuttal and all its history?')) return;
+  try {
+    await api('DELETE', `/api/rebuttals/${id}`);
+    if (currentRebuttalId === id) {
+      currentRebuttalId = null;
+      newRebuttal();
+    }
+    loadProjectsList();
+    toast('Deleted');
+  } catch (e) {
+    toast('Delete failed: ' + e.message, true);
+  }
+}
+
+// ── Auto-save ───────────────────────────────────────────────────────────────
+function markDirty() {
+  isDirty = true;
+  updateSaveIndicator();
+  clearTimeout(autoSaveTimer);
+  if (currentRebuttalId) {
+    autoSaveTimer = setTimeout(() => {
+      if (isDirty && currentRebuttalId) saveRebuttal();
+    }, AUTOSAVE_DELAY);
+  }
+}
+
+function updateSaveIndicator() {
+  const el = document.getElementById('saveIndicator');
+  if (!currentRebuttalId) {
+    el.textContent = 'unsaved';
+    el.className = 'save-indicator';
+    return;
+  }
+  if (isDirty) {
+    el.textContent = '● unsaved';
+    el.className = 'save-indicator dirty';
+  } else {
+    el.textContent = '✓ saved';
+    el.className = 'save-indicator saved';
+  }
+}
+
+function updateHistoryButtons() {
+  const show = !!currentRebuttalId;
+  document.getElementById('snapshotBtn').style.display = show ? '' : 'none';
+  document.getElementById('historyBtn').style.display = show ? '' : 'none';
+}
+
+// ── Snapshots ───────────────────────────────────────────────────────────────
+function openSnapshotDialog() {
+  document.getElementById('snapshotNoteInput').value = '';
+  document.getElementById('snapshotModal').style.display = 'flex';
+  setTimeout(() => document.getElementById('snapshotNoteInput').focus(), 50);
+}
+
+async function saveSnapshot() {
+  if (!currentRebuttalId) { toast('Save the rebuttal first', true); return; }
+  // First persist current state, then snapshot
+  await saveRebuttal();
+  const note = document.getElementById('snapshotNoteInput').value.trim();
+  try {
+    await api('POST', `/api/rebuttals/${currentRebuttalId}/history`, { note });
+    document.getElementById('snapshotModal').style.display = 'none';
+    toast('Snapshot saved');
+  } catch (e) {
+    toast('Snapshot failed: ' + e.message, true);
+  }
+}
+
+async function openHistory() {
+  if (!currentRebuttalId) return;
+  document.getElementById('historyModal').style.display = 'flex';
+  document.getElementById('historyBody').innerHTML =
+    '<div style="color:var(--text-muted);font-size:0.82rem;text-align:center;padding:24px">Loading…</div>';
+  try {
+    const list = await api('GET', `/api/rebuttals/${currentRebuttalId}/history`);
+    renderHistoryList(list);
+  } catch (e) {
+    document.getElementById('historyBody').innerHTML =
+      `<div style="color:var(--red);font-size:0.82rem;padding:16px">Error: ${e.message}</div>`;
+  }
+}
+
+function renderHistoryList(list) {
+  const body = document.getElementById('historyBody');
+  if (!list.length) {
+    body.innerHTML = '<div style="color:var(--text-muted);font-size:0.82rem;text-align:center;padding:24px">No snapshots yet. Use "Snapshot" to save checkpoints.</div>';
+    return;
+  }
+  body.innerHTML = `<div class="history-list">${list.map(h => `
+    <div class="history-item">
+      <div class="hi-meta">
+        <div class="hi-date">${fmtDate(h.snapshot_at, true)}</div>
+        ${h.note ? `<div class="hi-note">${escHtml(h.note)}</div>` : '<div class="hi-note">No label</div>'}
+      </div>
+      <div class="hi-actions">
+        <button class="btn btn-ghost btn-sm" onclick="previewSnap(${h.id}, '${escHtml(fmtDate(h.snapshot_at, true))}')">Preview</button>
+        <button class="btn btn-ghost btn-sm" onclick="deleteSnap(${h.id})">Delete</button>
+      </div>
+    </div>
+  `).join('')}</div>`;
+}
+
+async function previewSnap(snapshotId, dateLabel) {
+  previewSnapshotId = snapshotId;
+  document.getElementById('previewTitle').textContent = `Snapshot: ${dateLabel}`;
+  document.getElementById('previewContent').textContent = 'Loading…';
+  document.getElementById('previewModal').style.display = 'flex';
+  try {
+    const row = await api('GET', `/api/history/${snapshotId}`);
+    const s = row.data;
+    const fakeState = {
+      venue: s.venue || '',
+      paperTitle: s.paperTitle || '',
+      reviewers: s.reviewers || [],
+    };
+    document.getElementById('previewContent').textContent = buildExport(null, fakeState);
+  } catch (e) {
+    document.getElementById('previewContent').textContent = 'Error: ' + e.message;
+  }
+}
+
+async function restoreSnapshot() {
+  if (!previewSnapshotId) return;
+  if (!confirm('Restore this snapshot? Current state will be overwritten (save first if needed).')) return;
+  try {
+    const row = await api('GET', `/api/history/${previewSnapshotId}`);
+    const s = row.data;
+    const allIds = [...(s.reviewers||[]).map(r=>r.id), ...(s.reviewers||[]).flatMap(r=>(r.points||[]).map(p=>p.id))];
+    nextId = allIds.length ? Math.max(...allIds) : 1;
+    state = {
+      venue: s.venue || '',
+      paperTitle: s.paperTitle || '',
+      reviewers: s.reviewers || [],
+      activeId: s.activeId || (s.reviewers?.[0]?.id) || null,
+    };
+    document.getElementById('venue').value = state.venue;
+    document.getElementById('paperTitle').value = state.paperTitle;
+    document.getElementById('previewModal').style.display = 'none';
+    document.getElementById('historyModal').style.display = 'none';
+    markDirty();
+    renderSidebar();
+    renderEditor();
+    toast('Snapshot restored — save to persist');
+  } catch (e) {
+    toast('Restore failed: ' + e.message, true);
+  }
+}
+
+async function deleteSnap(snapshotId) {
+  if (!confirm('Delete this snapshot?')) return;
+  try {
+    await api('DELETE', `/api/history/${snapshotId}`);
+    openHistory(); // refresh list
+    toast('Snapshot deleted');
+  } catch (e) {
+    toast('Failed: ' + e.message, true);
+  }
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+function uid() { return ++nextId; }
+function newReviewerObj(index) {
+  return { id: uid(), name: `Reviewer ${index}`, score: '', opening: '', points: [] };
+}
+function newPoint(type = 'W') {
+  return { id: uid(), type, concern: '', response: '', status: 'todo' };
+}
+function scoreClass(v) {
+  if (v === '' || v === null || v === undefined) return 'score-neutral';
+  const n = parseInt(v);
+  if (n >= 6) return 'score-accept';
+  if (n >= 3) return 'score-borderline';
+  return 'score-reject';
+}
+function reviewerCharCount(rv) {
+  return rv.opening.length + rv.points.reduce((s,p) => s + p.response.length, 0);
+}
+function totalCharCount() {
+  return state.reviewers.reduce((s, rv) => s + reviewerCharCount(rv), 0);
+}
+function escHtml(str) {
+  return (str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function wordCount(str) {
+  return (str||'').trim().split(/\s+/).filter(Boolean).length;
+}
+function fmtDate(iso, full) {
+  if (!iso) return '';
+  const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z');
+  if (full) return d.toLocaleString(undefined, { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+  const now = new Date();
+  const diff = (now - d) / 1000;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+  return d.toLocaleDateString(undefined, { month:'short', day:'numeric' });
+}
+function toast(msg, isError) {
+  const el = document.createElement('div');
+  el.className = 'toast' + (isError ? ' error' : '');
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 2200);
+}
+
+// ── Field change handler ─────────────────────────────────────────────────────
+function onFieldChange() {
+  state.venue = document.getElementById('venue').value;
+  state.paperTitle = document.getElementById('paperTitle').value;
+  markDirty();
+}
+
+// ── Render sidebar ───────────────────────────────────────────────────────────
+function renderSidebar() {
+  const list = document.getElementById('reviewerList');
+  list.innerHTML = state.reviewers.map(rv => `
+    <div class="reviewer-tab ${state.activeId === rv.id ? 'active' : ''}" onclick="selectReviewer(${rv.id})">
+      <span class="rv-label">${escHtml(rv.name)}</span>
+      <span class="score-badge ${scoreClass(rv.score)}">${rv.score !== '' && rv.score != null ? rv.score : '?'}</span>
+      <button class="rv-delete" onclick="event.stopPropagation();deleteReviewer(${rv.id})" title="Delete">✕</button>
+    </div>
+  `).join('');
+}
+
+// ── Render editor ────────────────────────────────────────────────────────────
+function renderEditor() {
+  const inner = document.getElementById('editorInner');
+
+  const rv = state.reviewers.find(r => r.id === state.activeId);
+  if (!rv) {
+    inner.innerHTML = `<div class="empty-state">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M9 12h6M9 16h6M7 4h10a2 2 0 012 2v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6a2 2 0 012-2z"/>
+      </svg>
+      <p>${state.reviewers.length ? 'Select a reviewer from the sidebar' : 'Add a reviewer to get started'}</p>
+    </div>`;
+    return;
+  }
+
+  const charCount = reviewerCharCount(rv);
+  const charClass = charCount > CHAR_LIMIT ? 'over' : charCount > CHAR_LIMIT * 0.85 ? 'warn' : '';
+  const totalDone = rv.points.filter(p => p.status === 'done').length;
+
+  inner.innerHTML = `
+    <div class="rv-editor">
+      <div class="rv-editor-header">
+        <h2><input class="rv-name-input" value="${escHtml(rv.name)}"
+          oninput="updateReviewerField(${rv.id},'name',this.value)"
+          style="font-size:0.95rem;font-weight:600;max-width:180px;"></h2>
+        <label style="font-size:0.72rem;color:var(--text-muted)">Score:&nbsp;
+          <select class="rv-score-select" onchange="updateReviewerField(${rv.id},'score',this.value)">
+            ${SCORE_OPTIONS.map(v =>
+              `<option value="${v}" ${rv.score===v?'selected':''}>${v === '' ? 'No Score' : v}</option>`
+            ).join('')}
+          </select>
+        </label>
+        <span class="char-limit-info" id="charInfo_${rv.id}">
+          <span class="char-count ${charClass}">${charCount}</span> / ${CHAR_LIMIT} chars
+          &nbsp;·&nbsp; ${totalDone}/${rv.points.length} addressed
+        </span>
+      </div>
+      <div class="opening-note-wrap">
+        <div class="opening-hdr">
+          <label>Opening (specific to this reviewer)</label>
+          <span class="field-char-count" id="openingCount_${rv.id}">${rv.opening.length}</span>
+        </div>
+        <textarea rows="2" placeholder="E.g. Thank you for your thorough review…"
+          oninput="updateReviewerField(${rv.id},'opening',this.value)">${escHtml(rv.opening)}</textarea>
+      </div>
+      <div class="points-wrap" id="pointsWrap_${rv.id}">
+        ${rv.points.map(p => renderPoint(rv.id, p)).join('')}
+        <button class="add-point-btn" onclick="addPoint(${rv.id})">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+          Add Point (Weakness / Question / Comment)
+        </button>
+      </div>
+      <div class="export-bar">
+        <span class="stats" id="exportStats_${rv.id}">
+          ${charCount} chars · ${wordCount(rv.opening + rv.points.map(p=>p.response).join(''))} words
+        </span>
+        <button class="btn btn-ghost btn-sm" onclick="exportReviewer(${rv.id})">Export This</button>
+        <button class="btn btn-primary btn-sm" onclick="exportAll()">Export All</button>
+      </div>
+    </div>`;
+}
+
+function renderPoint(rvId, p) {
+  const statusLabel = p.status === 'done' ? 'Finished' : p.status === 'partial' ? 'Ongoing' : 'Not yet';
+  return `
+    <div class="point-block ${p.status}" id="point_${p.id}">
+      <div class="point-header">
+        <select class="point-type-select" onchange="updatePointField(${rvId},${p.id},'type',this.value)">
+          <option value="W" ${p.type==='W'?'selected':''}>W – Weakness</option>
+          <option value="Q" ${p.type==='Q'?'selected':''}>Q – Question</option>
+          <option value="C" ${p.type==='C'?'selected':''}>C – Comment</option>
+          <option value="S" ${p.type==='S'?'selected':''}>S – Strength</option>
+        </select>
+        <span class="point-label">${escHtml(p.type)}${getPointIndex(rvId, p.id)}</span>
+        <button class="status-toggle ${p.status}" onclick="cycleStatus(${rvId},${p.id})">${statusLabel}</button>
+        <button class="point-delete-btn" onclick="deletePoint(${rvId},${p.id})">✕</button>
+      </div>
+      <div class="point-body">
+        <div class="point-col">
+          <label>Reviewer Concern</label>
+          <textarea class="concern" placeholder="Paste reviewer's comment here…"
+            oninput="updatePointField(${rvId},${p.id},'concern',this.value)">${escHtml(p.concern)}</textarea>
+        </div>
+        <div class="point-col">
+          <div class="point-col-hdr">
+            <label>Your Response</label>
+            <span class="field-char-count" id="rc_${p.id}">${p.response.length}</span>
+          </div>
+          <textarea class="response" placeholder="Write your rebuttal…"
+            oninput="updatePointField(${rvId},${p.id},'response',this.value)">${escHtml(p.response)}</textarea>
+        </div>
+      </div>
+    </div>`;
+}
+
+function getPointIndex(rvId, pointId) {
+  const rv = state.reviewers.find(r => r.id === rvId);
+  if (!rv) return '';
+  const idx = rv.points.findIndex(p => p.id === pointId);
+  return idx >= 0 ? (idx + 1) : '';
+}
+
+// ── Actions ──────────────────────────────────────────────────────────────────
+function addReviewer() {
+  const rv = newReviewerObj(state.reviewers.length + 1);
+  state.reviewers.push(rv);
+  state.activeId = rv.id;
+  markDirty();
+  renderSidebar();
+  renderEditor();
+}
+
+function deleteReviewer(id) {
+  if (!confirm('Delete this reviewer?')) return;
+  state.reviewers = state.reviewers.filter(r => r.id !== id);
+  if (state.activeId === id) state.activeId = state.reviewers[0]?.id ?? null;
+  markDirty();
+  renderSidebar();
+  renderEditor();
+}
+
+function selectReviewer(id) {
+  state.activeId = id;
+  renderSidebar();
+  renderEditor();
+}
+
+function updateReviewerField(id, field, value) {
+  const rv = state.reviewers.find(r => r.id === id);
+  if (!rv) return;
+  rv[field] = value;
+  markDirty();
+  if (field === 'name' || field === 'score') renderSidebar();
+  refreshCharInfo(id);
+  if (field === 'opening') {
+    const el = document.getElementById(`openingCount_${id}`);
+    if (el) el.textContent = value.length;
+  }
+}
+
+function addPoint(rvId) {
+  const rv = state.reviewers.find(r => r.id === rvId);
+  if (!rv) return;
+  rv.points.push(newPoint());
+  markDirty();
+  renderEditor();
+  setTimeout(() => {
+    const wrap = document.getElementById(`pointsWrap_${rvId}`);
+    if (wrap) wrap.scrollTop = wrap.scrollHeight;
+  }, 50);
+}
+
+function deletePoint(rvId, pointId) {
+  const rv = state.reviewers.find(r => r.id === rvId);
+  if (!rv) return;
+  rv.points = rv.points.filter(p => p.id !== pointId);
+  markDirty();
+  renderEditor();
+}
+
+function updatePointField(rvId, pointId, field, value) {
+  const rv = state.reviewers.find(r => r.id === rvId);
+  if (!rv) return;
+  const p = rv.points.find(p => p.id === pointId);
+  if (!p) return;
+  p[field] = value;
+  markDirty();
+  if (field === 'response' || field === 'opening') refreshCharInfo(rvId);
+  if (field === 'response') {
+    const el = document.getElementById(`rc_${pointId}`);
+    if (el) el.textContent = value.length;
+  }
+}
+
+function cycleStatus(rvId, pointId) {
+  const rv = state.reviewers.find(r => r.id === rvId);
+  if (!rv) return;
+  const p = rv.points.find(p => p.id === pointId);
+  if (!p) return;
+  const cycle = { todo: 'partial', partial: 'done', done: 'todo' };
+  p.status = cycle[p.status] || 'todo';
+  markDirty();
+  renderSidebar();
+  const block = document.getElementById(`point_${pointId}`);
+  if (block) block.outerHTML = renderPoint(rvId, p);
+  refreshCharInfo(rvId);
+}
+
+function refreshCharInfo(rvId) {
+  const rv = state.reviewers.find(r => r.id === rvId);
+  if (!rv) return;
+  const charCount = reviewerCharCount(rv);
+  const charClass = charCount > CHAR_LIMIT ? 'over' : charCount > CHAR_LIMIT * 0.85 ? 'warn' : '';
+  const ci = document.getElementById(`charInfo_${rvId}`);
+  if (ci) ci.innerHTML = `<span class="char-count ${charClass}">${charCount}</span> / ${CHAR_LIMIT} chars &nbsp;·&nbsp; ${rv.points.filter(p=>p.status==='done').length}/${rv.points.length} addressed`;
+  const si = document.getElementById(`exportStats_${rvId}`);
+  if (si) si.innerHTML = `${charCount} chars · ${wordCount(rv.opening + rv.points.map(p=>p.response).join(''))} words`;
+}
+
+function resetCurrentRebuttal() {
+  if (!confirm('Remove all reviewers from this rebuttal?')) return;
+  state.reviewers = [];
+  state.activeId = null;
+  markDirty();
+  renderSidebar();
+  renderEditor();
+}
+
+// ── Export ───────────────────────────────────────────────────────────────────
+function buildExport(rvIds, overrideState) {
+  const s = overrideState || state;
+  let out = '';
+  const reviewers = rvIds ? s.reviewers.filter(r => rvIds.includes(r.id)) : (s.reviewers || []);
+  const multi = reviewers.length > 1;
+  reviewers.forEach(rv => {
+    if (multi) {
+      const scoreStr = rv.score !== '' && rv.score != null ? ` (Score: ${rv.score})` : '';
+      out += `## ${rv.name}${scoreStr}\n\n`;
+    }
+    if ((rv.opening||'').trim()) out += rv.opening.trim() + '\n\n';
+    const typeCounts = {};
+    (rv.points||[]).forEach(p => {
+      typeCounts[p.type] = (typeCounts[p.type] || 0) + 1;
+      const label = `${p.type}${typeCounts[p.type]}`;
+      if ((p.response||'').trim()) out += `## ${label}\n${p.response.trim()}\n\n`;
+    });
+  });
+  return out.trim();
+}
+
+function exportReviewer(rvId) {
+  document.getElementById('exportContent').textContent = buildExport([rvId]);
+  document.getElementById('exportModal').style.display = 'flex';
+}
+
+function exportAll() {
+  document.getElementById('exportContent').textContent = buildExport(null);
+  document.getElementById('exportModal').style.display = 'flex';
+}
+
+function copyExport() {
+  navigator.clipboard.writeText(document.getElementById('exportContent').textContent)
+    .then(() => toast('Copied!'));
+}
+
+// ── Close modals on overlay click ────────────────────────────────────────────
+['exportModal','snapshotModal','historyModal','previewModal'].forEach(id => {
+  document.getElementById(id).addEventListener('click', function(e) {
+    if (e.target === this) this.style.display = 'none';
+  });
+});
+
+// Snapshot enter key
+document.getElementById('snapshotNoteInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') saveSnapshot();
+});
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+updateSaveIndicator();
+updateHistoryButtons();
+renderSidebar();
+renderEditor();
+loadProjectsList();
+// sync theme button icon on load
+(function() {
+  const theme = document.documentElement.getAttribute('data-theme');
+  document.getElementById('themeBtn').textContent = theme === 'light' ? '☽' : '☀';
+})();
+</script>
+</body>
+</html>
