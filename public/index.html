@@ -181,6 +181,13 @@
     border-radius: var(--radius); padding: 7px 10px; font-size: 0.8rem; font-family: inherit; line-height: 1.5;
   }
   .opening-note-wrap textarea:focus { outline: none; border-color: var(--accent); }
+  .peer-focused { outline: 2px solid var(--peer-color, #6c7ef8) !important; outline-offset: -2px; border-radius: 4px; }
+  .peer-focus-label {
+    display: block; font-size: 0.62rem; font-weight: 700; color: #fff;
+    background: var(--peer-color, #6c7ef8); padding: 1px 6px; border-radius: 3px 3px 0 0;
+    white-space: nowrap; pointer-events: none; width: fit-content;
+  }
+  .field-wrap { position: relative; display: flex; flex-direction: column; }
 
   .points-wrap { flex: 1; overflow-y: auto; padding: 10px 18px 80px; }
   .point-block {
@@ -320,6 +327,36 @@
   .auth-card h2 { font-size: 1.1rem; font-weight: 600; margin-bottom: 6px; }
   .auth-card p  { font-size: 0.82rem; color: var(--text-muted); margin-bottom: 20px; }
 
+  /* ── Score config modal ── */
+  .score-config-modal { max-width: 480px; }
+  .score-config-modal .section-label {
+    font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.07em; color: var(--text-muted); margin: 16px 0 6px;
+  }
+  .score-config-modal .section-label:first-of-type { margin-top: 0; }
+  .range-row { display: flex; align-items: center; gap: 8px; }
+  .range-row input[type=number] {
+    width: 72px; background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); border-radius: var(--radius); padding: 5px 8px; font-size: 0.82rem;
+  }
+  .range-row input[type=number]:focus { outline: none; border-color: var(--accent); }
+  .score-label-rows { display: flex; flex-direction: column; gap: 5px; margin-top: 2px; max-height: 220px; overflow-y: auto; }
+  .score-label-row { display: flex; gap: 6px; align-items: center; }
+  .score-label-row input[type=number] {
+    width: 68px; flex-shrink: 0; background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); border-radius: var(--radius); padding: 5px 8px; font-size: 0.82rem;
+  }
+  .score-label-row input[type=text] {
+    flex: 1; background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); border-radius: var(--radius); padding: 5px 8px; font-size: 0.82rem;
+  }
+  .score-label-row input:focus { outline: none; border-color: var(--accent); }
+  .score-label-row .remove-btn {
+    background: none; border: none; color: var(--text-muted); cursor: pointer;
+    font-size: 0.9rem; padding: 2px 5px; border-radius: 3px; flex-shrink: 0;
+  }
+  .score-label-row .remove-btn:hover { color: var(--red); background: var(--surface2); }
+
   /* ── Share modal ── */
   .share-url-row { display: flex; gap: 6px; margin-top: 10px; }
   .share-url-row input {
@@ -352,12 +389,23 @@
 </style>
 </head>
 <body>
-<!-- Auth overlay (hidden after sign-in) -->
+<!-- Auth overlay -->
 <div class="auth-overlay" id="authOverlay" style="display:none">
   <div class="auth-card">
     <h2>Rebuttal Assistant</h2>
-    <p>Sign in to access your rebuttals.</p>
-    <div id="clerkSignIn"></div>
+    <p id="authToggleMsg" style="font-size:0.82rem;margin-bottom:16px">Sign in to continue.</p>
+    <input id="authUsername" type="text" placeholder="Username" autocomplete="username"
+      style="width:100%;padding:8px 12px;border-radius:6px;border:1px solid var(--border);
+             background:var(--surface2);color:var(--text);font-size:0.9rem;margin-bottom:8px;box-sizing:border-box">
+    <input id="authPassword" type="password" placeholder="Password" autocomplete="current-password"
+      style="width:100%;padding:8px 12px;border-radius:6px;border:1px solid var(--border);
+             background:var(--surface2);color:var(--text);font-size:0.9rem;margin-bottom:12px;box-sizing:border-box">
+    <p id="authError" style="color:var(--red);font-size:0.78rem;margin-bottom:10px;display:none"></p>
+    <button class="btn btn-primary" id="authSubmitBtn" style="width:100%;margin-bottom:10px" onclick="submitAuth()">Sign in</button>
+    <p style="font-size:0.78rem;color:var(--text-muted);text-align:center">
+      <span id="authSwitchText">Don't have an account?</span>
+      <a href="#" id="authSwitchLink" onclick="toggleAuthMode(event)" style="color:var(--accent)">Sign up</a>
+    </p>
   </div>
 </div>
 
@@ -381,7 +429,6 @@
       <button class="btn btn-ghost btn-sm" id="shareBtn" onclick="openShareModal()" style="display:none">&#128279; Share</button>
       <button class="btn btn-ghost btn-sm" id="themeBtn" onclick="toggleTheme()" title="Toggle light/dark mode">&#9788;</button>
       <div class="user-chip" id="userChip" style="display:none">
-        <img class="user-avatar" id="userAvatar" src="" alt="">
         <span id="userName"></span>
         <button class="btn btn-ghost btn-sm" style="padding:3px 7px;font-size:0.72rem" onclick="signOut()">Sign out</button>
       </div>
@@ -497,6 +544,40 @@
   </div>
 </div>
 
+<!-- Score config modal (shown when creating a new rebuttal) -->
+<div class="modal-overlay" id="scoreConfigModal" style="display:none">
+  <div class="modal score-config-modal">
+    <h3>&#9881; New Rebuttal — Configuration</h3>
+    <div class="modal-body" style="margin-top:14px">
+      <div class="section-label">Venue / Conference Name</div>
+      <input type="text" id="cfgVenue" placeholder="e.g. NeurIPS 2025"
+        style="width:100%;background:var(--surface2);border:1px solid var(--border);
+               color:var(--text);border-radius:var(--radius);padding:6px 10px;
+               font-size:0.82rem;box-sizing:border-box">
+
+      <div class="section-label">Score Range</div>
+      <div class="range-row">
+        <label style="font-size:0.78rem;color:var(--text-muted)">Min</label>
+        <input type="number" id="scoreMin" value="-2" min="-99" max="99">
+        <label style="font-size:0.78rem;color:var(--text-muted)">Max</label>
+        <input type="number" id="scoreMax" value="10" min="-99" max="99">
+        <span style="font-size:0.72rem;color:var(--text-muted)">integer scores, inclusive</span>
+      </div>
+
+      <div class="section-label" style="display:flex;align-items:center;justify-content:space-between">
+        <span>Score Labels <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional)</span></span>
+        <button class="btn btn-ghost btn-sm" onclick="addScoreLabelRow()">+ Add Label</button>
+      </div>
+      <div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:6px">Score value + description for each score you want to label.</div>
+      <div class="score-label-rows" id="scoreLabelRows"></div>
+    </div>
+    <div class="modal-actions" style="margin-top:16px">
+      <button class="btn btn-ghost" onclick="closeScoreConfigModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="confirmScoreConfig()">Create Rebuttal</button>
+    </div>
+  </div>
+</div>
+
 <script src="/socket.io/socket.io.js"></script>
 <script>
 // ── Theme ────────────────────────────────────────────────────────────────────
@@ -518,17 +599,52 @@ const CHAR_LIMIT = 5000;
 const AUTOSAVE_DELAY = 2000; // ms debounce
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
-let clerk = null;
-let skipAuth = true; // overwritten by /api/config
+let skipAuth = false;
+let authMode = 'login'; // 'login' | 'signup'
 
-async function loadClerkScript() {
-  return new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = '/clerk.js';
-    s.onload = resolve;
-    s.onerror = reject;
-    document.head.appendChild(s);
-  });
+function toggleAuthMode(e) {
+  e.preventDefault();
+  authMode = authMode === 'login' ? 'signup' : 'login';
+  const isSignup = authMode === 'signup';
+  document.getElementById('authToggleMsg').textContent = isSignup ? 'Create a new account.' : 'Sign in to continue.';
+  document.getElementById('authSubmitBtn').textContent = isSignup ? 'Sign up' : 'Sign in';
+  document.getElementById('authSwitchText').textContent = isSignup ? 'Already have an account?' : "Don't have an account?";
+  document.getElementById('authSwitchLink').textContent = isSignup ? 'Sign in' : 'Sign up';
+  document.getElementById('authPassword').autocomplete = isSignup ? 'new-password' : 'current-password';
+  document.getElementById('authError').style.display = 'none';
+}
+
+function showAuthError(msg) {
+  const el = document.getElementById('authError');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+async function submitAuth() {
+  const username = document.getElementById('authUsername').value.trim();
+  const password = document.getElementById('authPassword').value;
+  if (!username || !password) { showAuthError('Please fill in all fields.'); return; }
+
+  const btn = document.getElementById('authSubmitBtn');
+  btn.disabled = true;
+  btn.textContent = '…';
+
+  try {
+    const res = await fetch(`/api/auth/${authMode}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) { showAuthError(data.error ?? 'Something went wrong.'); return; }
+    // Success — session cookie is set, reload into the app
+    window.location.reload();
+  } catch {
+    showAuthError('Network error. Please try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = authMode === 'login' ? 'Sign in' : 'Sign up';
+  }
 }
 
 async function initAuth() {
@@ -536,37 +652,28 @@ async function initAuth() {
   skipAuth = config.skipAuth;
 
   if (skipAuth) {
-    document.getElementById('userChip').style.display = 'none';
+    document.getElementById('userName').textContent = 'dev';
+    document.getElementById('userChip').style.display = 'flex';
     return;
   }
 
-  await loadClerkScript();
-  clerk = new Clerk(config.clerkPublishableKey);
-  await clerk.load();
-
-  if (!clerk.user) {
+  // Check if already logged in
+  const me = await fetch('/api/auth/me');
+  if (me.status === 401) {
     document.getElementById('authOverlay').style.display = 'flex';
-    clerk.mountSignIn(document.getElementById('clerkSignIn'), {
-      afterSignInUrl: window.location.href,
-      afterSignUpUrl: window.location.href,
-    });
-    return; // stop — page will reload after sign-in
+    document.getElementById('authUsername').focus();
+    return; // stop — submitAuth() reloads after login
   }
 
-  // Show user chip
-  const user = clerk.user;
-  document.getElementById('userAvatar').src = user.imageUrl ?? '';
-  document.getElementById('userName').textContent = user.firstName ?? user.emailAddresses?.[0]?.emailAddress ?? '';
+  const { username } = await me.json();
+  document.getElementById('userName').textContent = username;
   document.getElementById('userChip').style.display = 'flex';
 }
 
-async function getToken() {
-  if (skipAuth || !clerk) return null;
-  return await clerk.session?.getToken() ?? null;
-}
+async function getToken() { return null; } // tokens are handled via cookies now
 
 async function signOut() {
-  if (clerk) await clerk.signOut();
+  await fetch('/api/auth/logout', { method: 'POST' });
   window.location.reload();
 }
 
@@ -576,6 +683,7 @@ let state = {
   paperTitle: '',
   reviewers: [],
   activeId: null,
+  scoreConfig: null,  // null = use default SCORE_OPTIONS
 };
 
 let currentRebuttalId = null;
@@ -587,14 +695,90 @@ let nextId = 1;
 
 const SCORE_OPTIONS = ['', '-2', '-1', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'];
 
+// ── Score config ─────────────────────────────────────────────────────────────
+function getScoreOptions() {
+  const cfg = state.scoreConfig;
+  if (!cfg) return SCORE_OPTIONS;
+  const scores = [''];
+  for (let v = cfg.min; v <= cfg.max; v++) scores.push(String(v));
+  return scores;
+}
+
+function getScoreLabel(v) {
+  if (v === '') return 'No Score';
+  const cfg = state.scoreConfig;
+  const lbl = cfg?.labels?.[v];
+  return lbl ? `${v} — ${lbl}` : v;
+}
+
+// ── Score config modal ────────────────────────────────────────────────────────
+function openScoreConfigModal() {
+  document.getElementById('cfgVenue').value = '';
+  document.getElementById('scoreMin').value = '-2';
+  document.getElementById('scoreMax').value = '10';
+  document.getElementById('scoreLabelRows').innerHTML = '';
+  document.getElementById('scoreConfigModal').style.display = 'flex';
+  setTimeout(() => document.getElementById('cfgVenue').focus(), 50);
+}
+
+function closeScoreConfigModal() {
+  document.getElementById('scoreConfigModal').style.display = 'none';
+}
+
+function addScoreLabelRow(score = '', label = '') {
+  const row = document.createElement('div');
+  row.className = 'score-label-row';
+  row.innerHTML = `
+    <input type="number" min="-99" max="99" placeholder="Score" value="${escHtml(String(score))}"
+      style="width:68px">
+    <input type="text" placeholder="Description (e.g. Strong Accept)" value="${escHtml(label)}">
+    <button class="remove-btn" onclick="this.parentElement.remove()" title="Remove">✕</button>`;
+  document.getElementById('scoreLabelRows').appendChild(row);
+  row.querySelector('input[type=number]').focus();
+}
+
+function confirmScoreConfig() {
+  const min = parseInt(document.getElementById('scoreMin').value);
+  const max = parseInt(document.getElementById('scoreMax').value);
+  if (isNaN(min) || isNaN(max) || min > max) {
+    alert('Invalid score range: min must be ≤ max.');
+    return;
+  }
+  const labels = {};
+  let labelError = null;
+  document.querySelectorAll('#scoreLabelRows .score-label-row').forEach(row => {
+    const scoreEl = row.querySelector('input[type=number]');
+    const textEl = row.querySelector('input[type=text]');
+    const v = parseInt(scoreEl.value);
+    const lbl = textEl.value.trim();
+    if (isNaN(v)) { labelError = 'All label score values must be numbers.'; return; }
+    if (v < min || v > max) { labelError = `Score ${v} is outside the range ${min}–${max}.`; return; }
+    if (lbl) labels[String(v)] = lbl;
+  });
+  if (labelError) { alert(labelError); return; }
+
+  const venue = document.getElementById('cfgVenue').value.trim();
+  closeScoreConfigModal();
+  _doNewRebuttal({ min, max, labels }, venue);
+}
+
 // ── Collaboration ────────────────────────────────────────────────────────────
 const CLIENT_ID = Math.random().toString(36).slice(2);
 let socket = null;
+/// Maps socketId → { path: string|null, color: string, name: string }
+const peerFocus = new Map();
+
 
 async function initCollab(rebId) {
   if (!socket) {
-    const token = await getToken();
-    socket = io({ auth: { token } });
+    // Fetch a short-lived token (HttpOnly cookie can't be read by JS directly)
+    const tokenData = skipAuth ? { token: null } : await api('GET', '/api/auth/socket-token');
+    socket = io({ auth: { token: tokenData?.token ?? null } });
+
+    socket.on('connect_error', (err) => {
+      if (err.message === 'Unauthorized') window.location.reload();
+      else console.error('Socket error:', err.message);
+    });
 
     socket.on('sync', ({ state: s }) => {
       applyRemoteState(s);
@@ -606,7 +790,27 @@ async function initCollab(rebId) {
     });
 
     socket.on('presence', ({ peers }) => {
+      // Sync peerFocus colors/names from presence data
+      peers.forEach(p => {
+        const entry = peerFocus.get(p.socketId);
+        if (entry) { entry.color = p.color; entry.name = p.name; }
+      });
+      // Remove entries for peers who left
+      for (const sid of peerFocus.keys()) {
+        if (!peers.find(p => p.socketId === sid)) peerFocus.delete(sid);
+      }
       renderPeers(peers);
+      applyPeerFocusStyles();
+    });
+
+    socket.on('peer_focus', ({ socketId, path }) => {
+      if (path === null) {
+        peerFocus.delete(socketId);
+      } else {
+        const existing = peerFocus.get(socketId);
+        peerFocus.set(socketId, { path, color: existing?.color ?? '#6c7ef8', name: existing?.name ?? '?' });
+      }
+      applyPeerFocusStyles();
     });
   }
   socket.emit('join', rebId);
@@ -626,6 +830,7 @@ function applyRemoteState(s) {
   state.venue = s.venue || '';
   state.paperTitle = s.paperTitle || '';
   state.reviewers = s.reviewers || [];
+  state.scoreConfig = s.scoreConfig || null;
   if (s.activeId && !state.activeId) state.activeId = s.activeId;
   document.getElementById('venue').value = state.venue;
   document.getElementById('paperTitle').value = state.paperTitle;
@@ -680,21 +885,63 @@ function renderPeers(peers) {
   const others = peers.filter(p => p.socketId !== socket?.id);
   if (!others.length) { el.innerHTML = ''; return; }
   el.innerHTML = others.map(p =>
-    `<span title="Collaborator online" style="
-      display:inline-block;width:10px;height:10px;
-      border-radius:50%;background:${p.color};
-      box-shadow:0 0 0 2px var(--surface)"></span>`
+    `<span title="${p.name}" style="
+      display:inline-flex;align-items:center;justify-content:center;
+      width:22px;height:22px;border-radius:50%;background:${p.color};
+      font-size:0.6rem;font-weight:700;color:#fff;
+      box-shadow:0 0 0 2px var(--surface);cursor:default"
+    >${(p.name || '?')[0].toUpperCase()}</span>`
   ).join('');
 }
 
+function applyPeerFocusStyles() {
+  // Clear all existing peer focus decorations
+  document.querySelectorAll('[data-path]').forEach(el => {
+    el.classList.remove('peer-focused');
+    el.style.removeProperty('--peer-color');
+    const label = el.parentElement?.querySelector('.peer-focus-label');
+    if (label) label.remove();
+  });
+
+  peerFocus.forEach(({ path, color, name }) => {
+    if (!path) return;
+    // Use direct attribute comparison to avoid CSS.escape issues with dot-paths
+    const el = Array.from(document.querySelectorAll('[data-path]'))
+                    .find(e => e.dataset.path === path);
+    if (!el) return;
+    el.style.setProperty('--peer-color', color);
+    el.classList.add('peer-focused');
+    // Add name label as a sibling above the textarea inside .field-wrap
+    const wrap = el.parentElement;
+    if (wrap && wrap.classList.contains('field-wrap') && !wrap.querySelector('.peer-focus-label')) {
+      const lbl = document.createElement('span');
+      lbl.className = 'peer-focus-label';
+      lbl.style.setProperty('--peer-color', color);
+      lbl.textContent = name;
+      wrap.insertBefore(lbl, el);
+    }
+  });
+}
+
+/// Event delegation: emit focus/blur for any [data-path] textarea
+document.addEventListener('focusin', (e) => {
+  const el = e.target.closest('[data-path]');
+  if (!el || !socket) return;
+  socket.emit('focus', { path: el.dataset.path });
+});
+document.addEventListener('focusout', (e) => {
+  const el = e.target.closest('[data-path]');
+  if (!el || !socket) return;
+  socket.emit('focus', { path: null });
+});
+
 // ── API helpers ─────────────────────────────────────────────────────────────
 async function api(method, path, body) {
-  const token = await getToken();
   const headers = { 'Content-Type': 'application/json' };
-  if (token) headers['Authorization'] = 'Bearer ' + token;
-  const opts = { method, headers };
+  const opts = { method, headers, credentials: 'same-origin' };
   if (body !== undefined) opts.body = JSON.stringify(body);
   const res = await fetch(path, opts);
+  if (res.status === 401) { window.location.reload(); return; }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error || 'Request failed');
@@ -736,14 +983,19 @@ function toggleProjects() {
 
 async function newRebuttal() {
   if (isDirty && currentRebuttalId && !confirm('You have unsaved changes. Continue?')) return;
+  openScoreConfigModal();
+}
+
+function _doNewRebuttal(scoreConfig, venue = '') {
   currentRebuttalId = null;
   isDirty = false;
   nextId = 1;
   state = {
-    venue: '', paperTitle: '',
+    venue, paperTitle: '',
     reviewers: [], activeId: null,
+    scoreConfig,
   };
-  document.getElementById('venue').value = '';
+  document.getElementById('venue').value = venue;
   document.getElementById('paperTitle').value = '';
   updateSaveIndicator();
   updateHistoryButtons();
@@ -767,6 +1019,7 @@ async function openRebuttal(id) {
       paperTitle: row.title || '',
       reviewers: s.reviewers || [],
       activeId: s.activeId || (s.reviewers && s.reviewers[0]?.id) || null,
+      scoreConfig: s.scoreConfig || null,
     };
     document.getElementById('venue').value = state.venue;
     document.getElementById('paperTitle').value = state.paperTitle;
@@ -1061,7 +1314,8 @@ function renderSidebar() {
 function renderEditor() {
   const inner = document.getElementById('editorInner');
 
-  const rv = state.reviewers.find(r => r.id === state.activeId);
+  const rvIdx = state.reviewers.findIndex(r => r.id === state.activeId);
+  const rv = rvIdx >= 0 ? state.reviewers[rvIdx] : null;
   if (!rv) {
     inner.innerHTML = `<div class="empty-state">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -1084,8 +1338,8 @@ function renderEditor() {
           style="font-size:0.95rem;font-weight:600;max-width:180px;"></h2>
         <label style="font-size:0.72rem;color:var(--text-muted)">Score:&nbsp;
           <select class="rv-score-select" onchange="updateReviewerField(${rv.id},'score',this.value)">
-            ${SCORE_OPTIONS.map(v =>
-              `<option value="${v}" ${rv.score===v?'selected':''}>${v === '' ? 'No Score' : v}</option>`
+            ${getScoreOptions().map(v =>
+              `<option value="${v}" ${rv.score===v?'selected':''}>${escHtml(getScoreLabel(v))}</option>`
             ).join('')}
           </select>
         </label>
@@ -1099,11 +1353,14 @@ function renderEditor() {
           <label>Opening (specific to this reviewer)</label>
           <span class="field-char-count" id="openingCount_${rv.id}">${rv.opening.length}</span>
         </div>
-        <textarea rows="2" placeholder="E.g. Thank you for your thorough review…"
-          oninput="updateReviewerField(${rv.id},'opening',this.value)">${escHtml(rv.opening)}</textarea>
+        <div class="field-wrap">
+          <textarea rows="2" placeholder="E.g. Thank you for your thorough review…"
+            data-path="reviewers.${rvIdx}.opening"
+            oninput="updateReviewerField(${rv.id},'opening',this.value)">${escHtml(rv.opening)}</textarea>
+        </div>
       </div>
       <div class="points-wrap" id="pointsWrap_${rv.id}">
-        ${rv.points.map(p => renderPoint(rv.id, p)).join('')}
+        ${rv.points.map((p, ptIdx) => renderPoint(rv.id, rvIdx, p, ptIdx)).join('')}
         <button class="add-point-btn" onclick="addPoint(${rv.id})">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
           Add Point (Weakness / Question / Comment)
@@ -1117,9 +1374,11 @@ function renderEditor() {
         <button class="btn btn-primary btn-sm" onclick="exportAll()">Export All</button>
       </div>
     </div>`;
+
+  applyPeerFocusStyles();
 }
 
-function renderPoint(rvId, p) {
+function renderPoint(rvId, rvIdx, p, ptIdx) {
   const statusLabel = p.status === 'done' ? 'Finished' : p.status === 'partial' ? 'Ongoing' : 'Not yet';
   return `
     <div class="point-block ${p.status}" id="point_${p.id}">
@@ -1130,23 +1389,29 @@ function renderPoint(rvId, p) {
           <option value="C" ${p.type==='C'?'selected':''}>C – Comment</option>
           <option value="S" ${p.type==='S'?'selected':''}>S – Strength</option>
         </select>
-        <span class="point-label">${escHtml(p.type)}${getPointIndex(rvId, p.id)}</span>
+        <span class="point-label">${escHtml(p.type)}${ptIdx + 1}</span>
         <button class="status-toggle ${p.status}" onclick="cycleStatus(${rvId},${p.id})">${statusLabel}</button>
         <button class="point-delete-btn" onclick="deletePoint(${rvId},${p.id})">✕</button>
       </div>
       <div class="point-body">
         <div class="point-col">
           <label>Reviewer Concern</label>
-          <textarea class="concern" placeholder="Paste reviewer's comment here…"
-            oninput="updatePointField(${rvId},${p.id},'concern',this.value)">${escHtml(p.concern)}</textarea>
+          <div class="field-wrap">
+            <textarea class="concern" placeholder="Paste reviewer's comment here…"
+              data-path="reviewers.${rvIdx}.points.${ptIdx}.concern"
+              oninput="updatePointField(${rvId},${p.id},'concern',this.value)">${escHtml(p.concern)}</textarea>
+          </div>
         </div>
         <div class="point-col">
           <div class="point-col-hdr">
             <label>Your Response</label>
             <span class="field-char-count" id="rc_${p.id}">${p.response.length}</span>
           </div>
-          <textarea class="response" placeholder="Write your rebuttal…"
-            oninput="updatePointField(${rvId},${p.id},'response',this.value)">${escHtml(p.response)}</textarea>
+          <div class="field-wrap">
+            <textarea class="response" placeholder="Write your rebuttal…"
+              data-path="reviewers.${rvIdx}.points.${ptIdx}.response"
+              oninput="updatePointField(${rvId},${p.id},'response',this.value)">${escHtml(p.response)}</textarea>
+          </div>
         </div>
       </div>
     </div>`;
@@ -1330,15 +1595,7 @@ document.getElementById('snapshotNoteInput').addEventListener('keydown', e => {
 });
 
 // ── Init ─────────────────────────────────────────────────────────────────────
-(async function() {
-  // sync theme button icon
-  const theme = document.documentElement.getAttribute('data-theme');
-  document.getElementById('themeBtn').textContent = theme === 'light' ? '☽' : '☀';
-
-  // Boot auth — may show sign-in overlay and stop here
-  await initAuth();
-  if (!skipAuth && !clerk?.user) return;
-
+async function initMain() {
   updateSaveIndicator();
   updateHistoryButtons();
   renderSidebar();
@@ -1348,15 +1605,30 @@ document.getElementById('snapshotNoteInput').addEventListener('keydown', e => {
   // Auto-open rebuttal from URL: /?r=<id>
   const urlId = new URLSearchParams(window.location.search).get('r');
   if (urlId) {
-    // Clean URL without reloading
     window.history.replaceState({}, '', '/');
     await openRebuttal(parseInt(urlId));
   }
 
-  // Close share modal on overlay click
-  document.getElementById('shareModal').addEventListener('click', function(e) {
-    if (e.target === this) this.style.display = 'none';
+}
+
+(async function() {
+  // sync theme button icon
+  const theme = document.documentElement.getAttribute('data-theme');
+  document.getElementById('themeBtn').textContent = theme === 'light' ? '☽' : '☀';
+
+  // Boot auth — may show sign-in overlay and stop here
+  await initAuth();
+  // initAuth() shows the login overlay and returns early if not logged in
+  if (!skipAuth && document.getElementById('authOverlay').style.display !== 'none') return;
+
+  // Allow Enter key to submit the login/signup form
+  ['authUsername', 'authPassword'].forEach(id => {
+    document.getElementById(id)?.addEventListener('keydown', e => {
+      if (e.key === 'Enter') submitAuth();
+    });
   });
+
+  await initMain();
 })();
 </script>
 </body>

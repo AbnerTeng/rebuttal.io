@@ -5,8 +5,9 @@ import path from 'path';
 import crypto from 'crypto';
 import Database from 'better-sqlite3';
 import { Server } from 'socket.io';
-import { clerkMiddleware, requireAuth, getAuth } from '@clerk/express';
-import { createClerkClient, verifyToken } from '@clerk/backend';
+import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
+import cookieParser from 'cookie-parser';
 import type {
   ServerToClientEvents,
   ClientToServerEvents,
@@ -22,28 +23,72 @@ import type {
 // ── Config ───────────────────────────────────────────────────────────────────
 const SKIP_AUTH = process.env.SKIP_AUTH === 'true';
 const MOCK_USER_ID = 'user_mock_dev';
+const MOCK_USERNAME = 'dev';
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'rebuttals.db');
 const INVITE_TTL_DAYS = 7;
+const BCRYPT_ROUNDS = 12;
+const SESSION_TTL_DAYS = 7;
+const COOKIE_NAME = 'session';
 
-// clerkClient used only for future admin operations; token verification uses verifyToken()
-createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY ?? '' });
+// If JWT_SECRET is not set, generate a random one (sessions won't survive restarts).
+const JWT_SECRET: string = process.env.JWT_SECRET ?? (() => {
+  console.warn('⚠️  JWT_SECRET not set — sessions will reset on restart. Add JWT_SECRET to .env');
+  return crypto.randomBytes(32).toString('hex');
+})();
 
 // ── Express + HTTP server ────────────────────────────────────────────────────
 const app = express();
 const server = http.createServer(app);
 
-if (!SKIP_AUTH) app.use(clerkMiddleware());
+// ── Session helpers ──────────────────────────────────────────────────────────
+declare module 'express-serve-static-core' {
+  interface Request { userId?: string; username?: string; }
+}
 
-function getUserId(req: Request): string {
-  if (SKIP_AUTH) return MOCK_USER_ID;
-  const { userId } = getAuth(req);
-  return userId!;
+interface JwtPayload { sub: string; username: string; }
+
+function signSession(userId: string, username: string): string {
+  return jwt.sign({ sub: userId, username } satisfies JwtPayload, JWT_SECRET, {
+    expiresIn: `${SESSION_TTL_DAYS}d`,
+  });
+}
+
+function verifySession(token: string): JwtPayload | null {
+  try {
+    return jwt.verify(token, JWT_SECRET) as JwtPayload;
+  } catch {
+    return null;
+  }
+}
+
+function getTokenFromCookie(cookieHeader?: string): string | null {
+  if (!cookieHeader) return null;
+  const match = cookieHeader.match(/(?:^|;\s*)session=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+function setSessionCookie(res: Response, token: string): void {
+  res.cookie(COOKIE_NAME, token, {
+    httpOnly: true,
+    sameSite: 'strict',
+    maxAge: SESSION_TTL_DAYS * 86400 * 1000,
+    path: '/',
+  });
 }
 
 function requireUser(req: Request, res: Response, next: NextFunction): void {
-  if (SKIP_AUTH) return next();
-  requireAuth()(req, res, next);
+  if (SKIP_AUTH) { req.userId = MOCK_USER_ID; req.username = MOCK_USERNAME; return next(); }
+  const token = req.cookies?.[COOKIE_NAME];
+  const payload = token ? verifySession(token) : null;
+  if (!payload) { res.status(401).json({ error: 'Unauthorized' }); return; }
+  req.userId = payload.sub;
+  req.username = payload.username;
+  next();
+}
+
+function getUserId(req: Request): string {
+  return SKIP_AUTH ? MOCK_USER_ID : req.userId!;
 }
 
 // ── Database ─────────────────────────────────────────────────────────────────
@@ -52,6 +97,13 @@ db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
 db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash TEXT    NOT NULL,
+    created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+
   CREATE TABLE IF NOT EXISTS rebuttals (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     title      TEXT    NOT NULL DEFAULT 'Untitled',
@@ -96,23 +148,17 @@ try { db.exec(`ALTER TABLE rebuttals ADD COLUMN owner_id TEXT NOT NULL DEFAULT '
 
 // ── Prepared statements ──────────────────────────────────────────────────────
 const stmts = {
-  // Rebuttals – only return rows the user owns or is a member of
-  // Rows with owner_id='' are "legacy open" (accessible to all authed users)
+  // All authenticated users see all projects — ownership only gates deletion
   listRebuttals: db.prepare(`
-    SELECT r.id, r.title, r.venue, r.owner_id, r.created_at, r.updated_at
-    FROM rebuttals r
-    LEFT JOIN rebuttal_members rm ON rm.rebuttal_id = r.id AND rm.user_id = @uid
-    WHERE r.owner_id = '' OR rm.user_id IS NOT NULL
-    ORDER BY r.updated_at DESC
+    SELECT id, title, venue, owner_id, created_at, updated_at
+    FROM rebuttals
+    ORDER BY updated_at DESC
   `),
 
   getRebuttal: db.prepare(`SELECT * FROM rebuttals WHERE id = ?`),
 
-  canAccess: db.prepare(`
-    SELECT 1 FROM rebuttals r
-    LEFT JOIN rebuttal_members rm ON rm.rebuttal_id = r.id AND rm.user_id = @uid
-    WHERE r.id = @rid AND (r.owner_id = '' OR rm.user_id IS NOT NULL)
-  `),
+  // Any authenticated user can access any rebuttal
+  canAccess: db.prepare(`SELECT 1 FROM rebuttals WHERE id = @rid`),
 
   isOwner: db.prepare(`
     SELECT 1 FROM rebuttal_members
@@ -195,21 +241,19 @@ const io = new Server<ClientToServerEvents, ServerToClientEvents, InterServerEve
   cors: { origin: '*' },
 });
 
-// Auth middleware for Socket.io
-io.use(async (socket, next) => {
+// Auth middleware for Socket.io — uses a short-lived token fetched from /api/auth/socket-token
+io.use((socket, next) => {
   if (SKIP_AUTH) {
     socket.data.userId = MOCK_USER_ID;
+    socket.data.name = MOCK_USERNAME;
     return next();
   }
   const token = socket.handshake.auth?.token as string | undefined;
-  if (!token) return next(new Error('Unauthorized'));
-  try {
-    const payload = await verifyToken(token, { secretKey: process.env.CLERK_SECRET_KEY! });
-    socket.data.userId = payload.sub;
-    next();
-  } catch {
-    next(new Error('Unauthorized'));
-  }
+  const payload = token ? verifySession(token) : null;
+  if (!payload) return next(new Error('Unauthorized'));
+  socket.data.userId = payload.sub;
+  socket.data.name = payload.username;
+  next();
 });
 
 io.on('connection', (socket) => {
@@ -238,8 +282,19 @@ io.on('connection', (socket) => {
     socket.to(`reb:${rebId}`).emit('patch', payload);
   });
 
+  socket.on('focus', ({ path }: { path: string | null }) => {
+    const rebId = socket.data.rebId;
+    if (rebId === null) return;
+    socket.to(`reb:${rebId}`).emit('peer_focus', { socketId: socket.id, path });
+  });
+
   socket.on('disconnect', () => {
-    if (socket.data.rebId !== null) broadcastPresence(socket.data.rebId);
+    const rebId = socket.data.rebId;
+    if (rebId !== null) {
+      // Clear this peer's focus for others
+      socket.to(`reb:${rebId}`).emit('peer_focus', { socketId: socket.id, path: null });
+      broadcastPresence(rebId);
+    }
   });
 });
 
@@ -248,44 +303,97 @@ function broadcastPresence(rebId: number): void {
   if (!room) return;
   const peers = [...room].map((sid) => {
     const s = io.sockets.sockets.get(sid);
-    return { socketId: sid, color: s?.data.color ?? '#fff' };
+    return { socketId: sid, color: s?.data.color ?? '#fff', name: s?.data.name ?? 'Anonymous' };
   });
   io.to(`reb:${rebId}`).emit('presence', { peers });
 }
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 app.use(express.json({ limit: '2mb' }));
-
-// Serve @clerk/clerk-js from node_modules
-app.get('/clerk.js', (_req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'node_modules/@clerk/clerk-js/dist/clerk.browser.js'));
-});
+app.use(cookieParser());
 
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
-// ── Config endpoint (safe to be public) ──────────────────────────────────────
+// ── Config endpoint ───────────────────────────────────────────────────────────
 app.get('/api/config', (_req, res) => {
-  const config: ClientConfig = {
-    clerkPublishableKey: process.env.CLERK_PUBLISHABLE_KEY ?? '',
-    skipAuth: SKIP_AUTH,
-  };
-  res.json(config);
+  res.json({ skipAuth: SKIP_AUTH } satisfies Partial<ClientConfig>);
+});
+
+// ── Auth routes ───────────────────────────────────────────────────────────────
+const USERNAME_RE = /^[a-zA-Z0-9_]{3,30}$/;
+
+app.post('/api/auth/signup', async (req, res) => {
+  const { username, password } = req.body as { username?: string; password?: string };
+  if (!username || !password) { res.status(400).json({ error: 'Username and password required' }); return; }
+  if (!USERNAME_RE.test(username)) {
+    res.status(400).json({ error: 'Username must be 3–30 characters: letters, numbers, underscores only' }); return;
+  }
+  if (password.length < 8) { res.status(400).json({ error: 'Password must be at least 8 characters' }); return; }
+  if (password.length > 72) { res.status(400).json({ error: 'Password too long' }); return; }
+
+  const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(username);
+  if (existing) { res.status(409).json({ error: 'Username already taken' }); return; }
+
+  const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+  const result = db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)').run(username, hash);
+  const userId = String(result.lastInsertRowid);
+
+  const token = signSession(userId, username);
+  setSessionCookie(res, token);
+  res.status(201).json({ username });
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  const { username, password } = req.body as { username?: string; password?: string };
+  if (!username || !password) { res.status(400).json({ error: 'Username and password required' }); return; }
+
+  const row = db.prepare('SELECT id, password_hash FROM users WHERE username = ?').get(username) as
+    { id: number; password_hash: string } | undefined;
+
+  // Always run bcrypt compare to prevent timing attacks
+  const hash = row?.password_hash ?? '$2b$12$invalidhashpadding000000000000000000000000000000000000000';
+  const match = await bcrypt.compare(password, hash);
+
+  if (!row || !match) { res.status(401).json({ error: 'Invalid username or password' }); return; }
+
+  const token = signSession(String(row.id), username);
+  setSessionCookie(res, token);
+  res.json({ username });
+});
+
+app.post('/api/auth/logout', (_req, res) => {
+  res.clearCookie(COOKIE_NAME, { path: '/' });
+  res.json({ ok: true });
+});
+
+// Short-lived token for socket.io auth (HttpOnly cookies can't be read by JS)
+app.get('/api/auth/socket-token', requireUser, (req, res) => {
+  const token = jwt.sign(
+    { sub: req.userId!, username: req.username! } satisfies JwtPayload,
+    JWT_SECRET,
+    { expiresIn: '5m' },
+  );
+  res.json({ token });
+});
+
+app.get('/api/auth/me', (req, res) => {
+  if (SKIP_AUTH) { res.json({ username: MOCK_USERNAME }); return; }
+  const token = req.cookies?.[COOKIE_NAME];
+  const payload = token ? verifySession(token) : null;
+  if (!payload) { res.status(401).json({ error: 'Not logged in' }); return; }
+  res.json({ username: payload.username });
 });
 
 // ── API: Rebuttals ────────────────────────────────────────────────────────────
-app.get('/api/rebuttals', requireUser, (req, res) => {
-  const uid = getUserId(req);
-  const rows = SKIP_AUTH
-    ? (db.prepare(`SELECT id, title, venue, owner_id, created_at, updated_at FROM rebuttals ORDER BY updated_at DESC`).all() as RebuttalRow[])
-    : (stmts.listRebuttals.all({ uid }) as RebuttalRow[]);
-  res.json(rows);
+app.get('/api/rebuttals', requireUser, (_req, res) => {
+  res.json(stmts.listRebuttals.all());
 });
 
 app.get('/api/rebuttals/:id', requireUser, (req, res) => {
   const rebId = parseInt(req.params.id as string);
   const uid = getUserId(req);
 
-  if (!SKIP_AUTH && !stmts.canAccess.get({ rid: rebId, uid })) {
+  if (!SKIP_AUTH && !stmts.canAccess.get({ rid: rebId })) {
     res.status(403).json({ error: 'Forbidden' }); return;
   }
 
@@ -313,7 +421,7 @@ app.put('/api/rebuttals/:id', requireUser, (req, res) => {
   const rebId = parseInt(req.params.id as string);
   const uid = getUserId(req);
 
-  if (!SKIP_AUTH && !stmts.canAccess.get({ rid: rebId, uid })) {
+  if (!SKIP_AUTH && !stmts.canAccess.get({ rid: rebId })) {
     res.status(403).json({ error: 'Forbidden' }); return;
   }
 
@@ -365,7 +473,7 @@ app.delete('/api/rebuttals/:id', requireUser, (req, res) => {
 app.get('/api/rebuttals/:id/history', requireUser, (req, res) => {
   const rebId = parseInt(req.params.id as string);
   const uid = getUserId(req);
-  if (!SKIP_AUTH && !stmts.canAccess.get({ rid: rebId, uid })) {
+  if (!SKIP_AUTH && !stmts.canAccess.get({ rid: rebId })) {
     res.status(403).json({ error: 'Forbidden' }); return;
   }
   res.json(stmts.listHistory.all(rebId));
@@ -380,7 +488,7 @@ app.get('/api/history/:snapshotId', requireUser, (req, res) => {
 app.post('/api/rebuttals/:id/history', requireUser, (req, res) => {
   const rebId = parseInt(req.params.id as string);
   const uid = getUserId(req);
-  if (!SKIP_AUTH && !stmts.canAccess.get({ rid: rebId, uid })) {
+  if (!SKIP_AUTH && !stmts.canAccess.get({ rid: rebId })) {
     res.status(403).json({ error: 'Forbidden' }); return;
   }
   const existing = stmts.getRebuttal.get(rebId) as RebuttalRow | undefined;
@@ -407,7 +515,7 @@ app.post('/api/rebuttals/:id/invite', requireUser, (req, res) => {
   const rebId = parseInt(req.params.id as string);
   const uid = getUserId(req);
 
-  if (!SKIP_AUTH && !stmts.canAccess.get({ rid: rebId, uid })) {
+  if (!SKIP_AUTH && !stmts.canAccess.get({ rid: rebId })) {
     res.status(403).json({ error: 'Forbidden' }); return;
   }
 
@@ -441,74 +549,97 @@ app.post('/api/invite/:token/accept', requireUser, (req, res) => {
 
 // ── Invite landing page ───────────────────────────────────────────────────────
 app.get('/invite/:token', (req, res) => {
-  const token = req.params.token;
-  const publishableKey = process.env.CLERK_PUBLISHABLE_KEY ?? '';
-
+  const inviteToken = req.params.token;
   res.send(`<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Join Rebuttal</title>
-<script src="/clerk.js"></script>
 <style>
   body { font-family: system-ui, sans-serif; background:#0f1117; color:#e2e8f0;
     display:flex; align-items:center; justify-content:center; height:100vh; margin:0; }
   .card { background:#1a1d27; border:1px solid #2e3250; border-radius:12px; padding:32px;
     max-width:400px; width:90%; text-align:center; }
   h2 { margin:0 0 8px; font-size:1.2rem; }
-  p  { color:#7c84a3; font-size:0.88rem; margin:0 0 24px; }
-  .msg { font-size:0.82rem; color:#7c84a3; margin-top:16px; }
+  p  { color:#7c84a3; font-size:0.88rem; margin:0 0 16px; }
+  input { width:100%; padding:8px 12px; border-radius:6px; border:1px solid #2e3250;
+    background:#22263a; color:#e2e8f0; font-size:0.9rem; margin-bottom:8px; box-sizing:border-box; }
+  button { width:100%; padding:9px; border-radius:6px; border:none; background:#6c7ef8;
+    color:#fff; font-weight:600; cursor:pointer; font-size:0.9rem; }
+  .msg { font-size:0.82rem; color:#7c84a3; margin-top:12px; }
+  .err { color:#f87171; }
 </style>
 </head>
 <body>
 <div class="card">
   <h2>You've been invited to collaborate</h2>
-  <p>Sign in to join this rebuttal document.</p>
-  <div id="clerk-sign-in"></div>
-  <div id="msg" class="msg">Loading…</div>
+  <div id="loginForm">
+    <p>Sign in to join this rebuttal.</p>
+    <input id="username" type="text" placeholder="Username" autocomplete="username">
+    <input id="password" type="password" placeholder="Password" autocomplete="current-password">
+    <p id="err" class="msg err" style="display:none"></p>
+    <button onclick="doAccept()">Join</button>
+    <p class="msg">No account? <a href="/" style="color:#6c7ef8">Sign up first</a>, then use the invite link again.</p>
+  </div>
+  <div id="msg" class="msg" style="display:none"></div>
 </div>
 <script>
-const TOKEN = ${JSON.stringify(token)};
-const SKIP_AUTH = ${JSON.stringify(SKIP_AUTH)};
-const PUBLISHABLE_KEY = ${JSON.stringify(publishableKey)};
+const INVITE_TOKEN = ${JSON.stringify(inviteToken)};
 
-async function run() {
-  const msg = document.getElementById('msg');
+async function doAccept() {
+  const username = document.getElementById('username').value.trim();
+  const password = document.getElementById('password').value;
+  const errEl = document.getElementById('err');
+  errEl.style.display = 'none';
 
-  if (SKIP_AUTH) {
-    msg.textContent = 'Accepting invite…';
-    const r = await fetch('/api/invite/' + TOKEN + '/accept', { method: 'POST' });
-    const data = await r.json();
-    if (r.ok) window.location.href = '/?r=' + data.rebuttal_id;
-    else msg.textContent = 'Error: ' + data.error;
+  // Login first
+  const loginRes = await fetch('/api/auth/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!loginRes.ok) {
+    const d = await loginRes.json();
+    errEl.textContent = d.error ?? 'Login failed';
+    errEl.style.display = 'block';
     return;
   }
 
-  const clerk = new Clerk(PUBLISHABLE_KEY);
-  await clerk.load();
-
-  if (!clerk.user) {
-    msg.textContent = '';
-    clerk.mountSignIn(document.getElementById('clerk-sign-in'), {
-      afterSignInUrl: '/invite/' + TOKEN,
-      afterSignUpUrl: '/invite/' + TOKEN,
-    });
-    return;
-  }
-
-  msg.textContent = 'Accepting invite…';
-  const token = await clerk.session.getToken();
-  const r = await fetch('/api/invite/' + TOKEN + '/accept', {
-    method: 'POST',
-    headers: { 'Authorization': 'Bearer ' + token },
+  // Accept invite (cookie is now set)
+  const r = await fetch('/api/invite/' + INVITE_TOKEN + '/accept', {
+    method: 'POST', credentials: 'same-origin',
   });
   const data = await r.json();
-  if (r.ok) window.location.href = '/?r=' + data.rebuttal_id;
-  else msg.textContent = 'Error: ' + data.error;
+  if (r.ok) {
+    window.location.href = '/?r=' + data.rebuttal_id;
+  } else {
+    document.getElementById('loginForm').style.display = 'none';
+    const msg = document.getElementById('msg');
+    msg.style.display = 'block';
+    msg.textContent = 'Error: ' + data.error;
+  }
 }
 
-run().catch(e => { document.getElementById('msg').textContent = e.message; });
+// Check if already logged in
+fetch('/api/auth/me').then(async r => {
+  if (r.ok) {
+    // Already logged in — accept directly
+    document.getElementById('loginForm').style.display = 'none';
+    const msg = document.getElementById('msg');
+    msg.style.display = 'block';
+    msg.textContent = 'Accepting invite…';
+    const res = await fetch('/api/invite/' + INVITE_TOKEN + '/accept', {
+      method: 'POST', credentials: 'same-origin',
+    });
+    const data = await res.json();
+    if (res.ok) window.location.href = '/?r=' + data.rebuttal_id;
+    else msg.textContent = 'Error: ' + data.error;
+  }
+});
+
+document.getElementById('password').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doAccept();
+});
 </script>
 </body>
 </html>`);
@@ -518,6 +649,6 @@ run().catch(e => { document.getElementById('msg').textContent = e.message; });
 app.get('/', (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
 
 server.listen(PORT, () => {
-  const mode = SKIP_AUTH ? 'no-auth (SKIP_AUTH=true)' : 'Clerk auth';
+  const mode = SKIP_AUTH ? 'no-auth (SKIP_AUTH=true)' : 'custom auth';
   console.log(`Rebuttal UI → http://localhost:${PORT}  [${mode}]`);
 });

@@ -12,7 +12,7 @@ Multiple co-authors can edit the same rebuttal simultaneously — changes sync l
 - **Per-reviewer editor** — track each reviewer's concerns, your responses, and status
 - **Version history** — manual snapshots you can preview and restore
 - **Share links** — invite collaborators via a 7-day invite URL
-- **Auth** — Clerk-based sign-in (email, Google, GitHub, etc.)
+- **Auth** — username/password sign-in with bcrypt + JWT session cookies
 - **Export** — copy formatted rebuttal text to clipboard
 
 ---
@@ -24,7 +24,6 @@ Each person hosts their own instance. No shared server, no shared accounts.
 ### Prerequisites
 
 - A machine with Docker installed and a publicly routable IP
-- A free [Clerk](https://clerk.com) account for authentication
 
 ### 1. Clone and configure
 
@@ -32,20 +31,18 @@ Each person hosts their own instance. No shared server, no shared accounts.
 git clone https://github.com/AbnerTeng/rebuttal.io.git
 cd rebuttal.io
 cp .env.example .env
-nano .env
+vim .env
 ```
 
-Fill in your Clerk keys:
+Set a random secret for signing session tokens:
 
 ```dotenv
-CLERK_PUBLISHABLE_KEY=pk_live_...
-CLERK_SECRET_KEY=sk_live_...
+# Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+JWT_SECRET=your_random_secret_here
 SKIP_AUTH=false
+PORT=3000
 DB_PATH=/data/rebuttals.db
 ```
-
-> **Getting Clerk keys:** [dashboard.clerk.com](https://dashboard.clerk.com) → create an app → **API Keys**.
-> Also add your host to **Allowed Origins** (e.g. `http://140.112.29.237:8886`) and set **Home URL** accordingly.
 
 ### 2. Open firewall port (one time)
 
@@ -53,13 +50,27 @@ DB_PATH=/data/rebuttals.db
 sudo ufw allow 8886 && sudo ufw enable
 ```
 
-### 3. Deploy
+### 3. Revise docker compose file
 
-```bash
-docker compose up -d
+```yml
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/data
+    ports:
+      - "<your-port>:3000"
 ```
 
-Your app is live at `http://<your-ip>:8886`.
+### 4. Deploy
+
+```bash
+docker compose up -d --build
+```
+
+Your app is live at `http://<your-ip>:<your-port>`.
 
 ### Updating
 
@@ -76,7 +87,7 @@ docker compose up -d --build
 git clone https://github.com/AbnerTeng/rebuttal.io.git
 cd rebuttal.io
 npm install
-cp .env.example .env   # set SKIP_AUTH=true for local dev
+cp .env.example .env   # set SKIP_AUTH=true and JWT_SECRET to any value
 npm run dev
 ```
 
@@ -89,7 +100,7 @@ Open [http://localhost:3000](http://localhost:3000).
 ```
 Browser
   │
-  ├─ HTTP (8886) ──► Node.js (3000)
+  ├─ HTTP (<your-port>) ──► Node.js (3000)
   │                       │
   └─ WebSocket ───────────┘
                           │
@@ -102,7 +113,7 @@ Browser
 | Backend | Node.js, Express, TypeScript |
 | Real-time | Socket.io (WebSocket) |
 | Database | SQLite via better-sqlite3 |
-| Auth | Clerk |
+| Auth | Custom (bcrypt + JWT session cookies) |
 | Process manager | Docker |
 
 ---

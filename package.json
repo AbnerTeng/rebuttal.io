@@ -9,17 +9,22 @@
     "build": "tsc"
   },
   "dependencies": {
+    "@clerk/backend": "^3.2.8",
     "@clerk/clerk-js": "^6.6.0",
-    "@clerk/express": "^2.1.0",
+    "bcrypt": "^6.0.0",
     "better-sqlite3": "^9.4.3",
+    "cookie-parser": "^1.4.7",
     "dotenv": "^17.4.1",
     "express": "^4.18.3",
+    "jsonwebtoken": "^9.0.3",
     "socket.io": "^4.8.3"
   },
   "devDependencies": {
-    "@clerk/backend": "^3.2.8",
+    "@types/bcrypt": "^6.0.0",
     "@types/better-sqlite3": "^7.6.13",
+    "@types/cookie-parser": "^1.4.10",
     "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^25.5.2",
     "socket.io-client": "^4.8.3",
     "tsx": "^4.21.0",

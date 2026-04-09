@@ -2,7 +2,7 @@
 
 export type PointStatus = 'todo' | 'partial' | 'done';
 export type PointType = 'W' | 'Q' | 'C' | 'S';
-export type ReviewerScore = '' | '-2' | '-1' | '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '10';
+export type ReviewerScore = string; // empty string = no score; any integer string otherwise
 export type MemberRole = 'owner' | 'editor';
 
 export interface Point {
@@ -21,11 +21,18 @@ export interface Reviewer {
   points: Point[];
 }
 
+export interface ScoreConfig {
+  min: number;
+  max: number;
+  labels: Record<string, string>; // score value string → description
+}
+
 export interface RebuttalData {
   venue: string;
   paperTitle: string;
   reviewers: Reviewer[];
   activeId: number | null;
+  scoreConfig?: ScoreConfig;
 }
 
 export interface RebuttalRow {
@@ -65,19 +72,27 @@ export interface PresencePayload {
 export interface PeerInfo {
   socketId: string;
   color: string;
+  name: string;
 }
 
 // ── Socket.io typed event maps ────────────────────────────────────────────────
+
+export interface PeerFocusPayload {
+  socketId: string;
+  path: string | null; // null = blurred
+}
 
 export interface ServerToClientEvents {
   sync: (payload: SyncPayload) => void;
   patch: (payload: FieldPatch) => void;
   presence: (payload: PresencePayload) => void;
+  peer_focus: (payload: PeerFocusPayload) => void;
 }
 
 export interface ClientToServerEvents {
   join: (rebId: number) => void;
   patch: (payload: FieldPatch) => void;
+  focus: (payload: { path: string | null }) => void;
 }
 
 export interface InterServerEvents {}
@@ -86,11 +101,11 @@ export interface SocketData {
   rebId: number | null;
   color: string;
   userId: string;
+  name: string;
 }
 
 // ── Config payload sent to frontend ──────────────────────────────────────────
 
 export interface ClientConfig {
-  clerkPublishableKey: string;
   skipAuth: boolean;
 }
