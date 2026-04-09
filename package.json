@@ -2,13 +2,22 @@
   "name": "rebuttal-ui",
   "version": "1.0.0",
   "description": "ML conference rebuttal assistant",
-  "main": "server.js",
+  "main": "dist/server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
+    "start": "node dist/server.js",
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc"
   },
   "dependencies": {
     "better-sqlite3": "^9.4.3",
-    "express": "^4.18.3"
+    "express": "^4.18.3",
+    "socket.io": "^4.8.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.5.2",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2"
   }
 }

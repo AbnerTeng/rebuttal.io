@@ -334,6 +334,7 @@
       <input class="paper-title" id="paperTitle" placeholder="Paper title" oninput="onFieldChange()">
     </div>
     <div class="topbar-actions">
+      <span id="peersIndicator" style="display:flex;align-items:center;gap:4px;margin-right:4px"></span>
       <span class="save-indicator" id="saveIndicator">&#8212;</span>
       <button class="btn btn-ghost btn-sm" id="snapshotBtn" onclick="openSnapshotDialog()" style="display:none">&#128247; Snapshot</button>
       <button class="btn btn-ghost btn-sm" id="historyBtn" onclick="openHistory()" style="display:none">&#128336; History</button>
@@ -436,6 +437,7 @@
   </div>
 </div>
 
+<script src="/socket.io/socket.io.js"></script>
 <script>
 // ── Theme ────────────────────────────────────────────────────────────────────
 (function() {
@@ -471,6 +473,105 @@ let projectsPanelOpen = true;
 let nextId = 1;
 
 const SCORE_OPTIONS = ['', '-2', '-1', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'];
+
+// ── Collaboration ────────────────────────────────────────────────────────────
+const CLIENT_ID = Math.random().toString(36).slice(2);
+let socket = null;
+
+function initCollab(rebId) {
+  if (!socket) {
+    socket = io();
+
+    socket.on('sync', ({ state: s }) => {
+      applyRemoteState(s);
+    });
+
+    socket.on('patch', (payload) => {
+      if (payload.clientId === CLIENT_ID) return;
+      applyRemotePatch(payload.path, payload.value);
+    });
+
+    socket.on('presence', ({ peers }) => {
+      renderPeers(peers);
+    });
+  }
+  socket.emit('join', rebId);
+}
+
+function sendPatch(path, value) {
+  if (!socket || !currentRebuttalId) return;
+  socket.emit('patch', { path, value, clientId: CLIENT_ID });
+}
+
+function applyRemoteState(s) {
+  const allIds = [
+    ...(s.reviewers || []).map(r => r.id),
+    ...(s.reviewers || []).flatMap(r => (r.points || []).map(p => p.id)),
+  ];
+  nextId = allIds.length ? Math.max(...allIds) + 1 : 1;
+  state.venue = s.venue || '';
+  state.paperTitle = s.paperTitle || '';
+  state.reviewers = s.reviewers || [];
+  if (s.activeId && !state.activeId) state.activeId = s.activeId;
+  document.getElementById('venue').value = state.venue;
+  document.getElementById('paperTitle').value = state.paperTitle;
+  renderSidebar();
+  renderEditor();
+}
+
+function applyRemotePatch(path, value) {
+  if (path === 'venue') {
+    state.venue = value;
+    document.getElementById('venue').value = value;
+    return;
+  }
+  if (path === 'paperTitle') {
+    state.paperTitle = value;
+    document.getElementById('paperTitle').value = value;
+    return;
+  }
+  if (path === 'reviewers') {
+    state.reviewers = value;
+    const allIds = [...value.map(r => r.id), ...value.flatMap(r => (r.points || []).map(p => p.id))];
+    nextId = allIds.length ? Math.max(...allIds) + 1 : 1;
+    if (!state.reviewers.find(r => r.id === state.activeId))
+      state.activeId = state.reviewers[0]?.id ?? null;
+    renderSidebar();
+    renderEditor();
+    return;
+  }
+  // dot-path into state object
+  const parts = path.split('.');
+  let cur = state;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (cur == null || typeof cur !== 'object') return;
+    cur = cur[parts[i]];
+  }
+  if (cur == null || typeof cur !== 'object') return;
+  cur[parts[parts.length - 1]] = value;
+
+  // surgical DOM updates where possible, full re-render otherwise
+  if (parts[0] === 'reviewers' && parts.length >= 3) {
+    const rv = state.reviewers[parseInt(parts[1])];
+    if (!rv) return;
+    const field = parts[2];
+    if (field === 'name' || field === 'score') renderSidebar();
+    if (rv.id === state.activeId) renderEditor();
+  }
+}
+
+function renderPeers(peers) {
+  const el = document.getElementById('peersIndicator');
+  // peers includes self; only show others
+  const others = peers.filter(p => p.socketId !== socket?.id);
+  if (!others.length) { el.innerHTML = ''; return; }
+  el.innerHTML = others.map(p =>
+    `<span title="Collaborator online" style="
+      display:inline-block;width:10px;height:10px;
+      border-radius:50%;background:${p.color};
+      box-shadow:0 0 0 2px var(--surface)"></span>`
+  ).join('');
+}
 
 // ── API helpers ─────────────────────────────────────────────────────────────
 async function api(method, path, body) {
@@ -558,6 +659,7 @@ async function openRebuttal(id) {
     renderSidebar();
     renderEditor();
     loadProjectsList();
+    initCollab(currentRebuttalId);
   } catch (e) {
     toast('Failed to load: ' + e.message, true);
   }
@@ -796,6 +898,8 @@ function toast(msg, isError) {
 function onFieldChange() {
   state.venue = document.getElementById('venue').value;
   state.paperTitle = document.getElementById('paperTitle').value;
+  sendPatch('venue', state.venue);
+  sendPatch('paperTitle', state.paperTitle);
   markDirty();
 }
 
@@ -918,6 +1022,7 @@ function addReviewer() {
   const rv = newReviewerObj(state.reviewers.length + 1);
   state.reviewers.push(rv);
   state.activeId = rv.id;
+  sendPatch('reviewers', state.reviewers);
   markDirty();
   renderSidebar();
   renderEditor();
@@ -927,6 +1032,7 @@ function deleteReviewer(id) {
   if (!confirm('Delete this reviewer?')) return;
   state.reviewers = state.reviewers.filter(r => r.id !== id);
   if (state.activeId === id) state.activeId = state.reviewers[0]?.id ?? null;
+  sendPatch('reviewers', state.reviewers);
   markDirty();
   renderSidebar();
   renderEditor();
@@ -942,6 +1048,8 @@ function updateReviewerField(id, field, value) {
   const rv = state.reviewers.find(r => r.id === id);
   if (!rv) return;
   rv[field] = value;
+  const rvIdx = state.reviewers.indexOf(rv);
+  sendPatch(`reviewers.${rvIdx}.${field}`, value);
   markDirty();
   if (field === 'name' || field === 'score') renderSidebar();
   refreshCharInfo(id);
@@ -955,6 +1063,8 @@ function addPoint(rvId) {
   const rv = state.reviewers.find(r => r.id === rvId);
   if (!rv) return;
   rv.points.push(newPoint());
+  const rvIdx = state.reviewers.indexOf(rv);
+  sendPatch(`reviewers.${rvIdx}.points`, rv.points);
   markDirty();
   renderEditor();
   setTimeout(() => {
@@ -967,6 +1077,8 @@ function deletePoint(rvId, pointId) {
   const rv = state.reviewers.find(r => r.id === rvId);
   if (!rv) return;
   rv.points = rv.points.filter(p => p.id !== pointId);
+  const rvIdx = state.reviewers.indexOf(rv);
+  sendPatch(`reviewers.${rvIdx}.points`, rv.points);
   markDirty();
   renderEditor();
 }
@@ -977,6 +1089,9 @@ function updatePointField(rvId, pointId, field, value) {
   const p = rv.points.find(p => p.id === pointId);
   if (!p) return;
   p[field] = value;
+  const rvIdx = state.reviewers.indexOf(rv);
+  const ptIdx = rv.points.indexOf(p);
+  sendPatch(`reviewers.${rvIdx}.points.${ptIdx}.${field}`, value);
   markDirty();
   if (field === 'response' || field === 'opening') refreshCharInfo(rvId);
   if (field === 'response') {
@@ -992,6 +1107,9 @@ function cycleStatus(rvId, pointId) {
   if (!p) return;
   const cycle = { todo: 'partial', partial: 'done', done: 'todo' };
   p.status = cycle[p.status] || 'todo';
+  const rvIdx = state.reviewers.indexOf(rv);
+  const ptIdx = rv.points.indexOf(p);
+  sendPatch(`reviewers.${rvIdx}.points.${ptIdx}.status`, p.status);
   markDirty();
   renderSidebar();
   const block = document.getElementById(`point_${pointId}`);
@@ -1014,6 +1132,7 @@ function resetCurrentRebuttal() {
   if (!confirm('Remove all reviewers from this rebuttal?')) return;
   state.reviewers = [];
   state.activeId = null;
+  sendPatch('reviewers', []);
   markDirty();
   renderSidebar();
   renderEditor();
