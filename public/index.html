@@ -497,7 +497,6 @@
   </div>
 </div>
 
-<script src="/clerk.js"></script>
 <script src="/socket.io/socket.io.js"></script>
 <script>
 // ── Theme ────────────────────────────────────────────────────────────────────
@@ -522,6 +521,16 @@ const AUTOSAVE_DELAY = 2000; // ms debounce
 let clerk = null;
 let skipAuth = true; // overwritten by /api/config
 
+async function loadClerkScript() {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = '/clerk.js';
+    s.onload = resolve;
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
 async function initAuth() {
   const config = await fetch('/api/config').then(r => r.json());
   skipAuth = config.skipAuth;
@@ -531,6 +540,7 @@ async function initAuth() {
     return;
   }
 
+  await loadClerkScript();
   clerk = new Clerk(config.clerkPublishableKey);
   await clerk.load();
 
