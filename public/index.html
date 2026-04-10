@@ -295,15 +295,6 @@
   .history-item .hi-note { font-size: 0.72rem; color: var(--text-muted); margin-top: 2px; }
   .history-item .hi-actions { display: flex; gap: 6px; }
 
-  /* Snapshot input */
-  .snapshot-row { display: flex; gap: 8px; align-items: center; }
-  .snapshot-row input {
-    flex: 1; background: var(--surface2); border: 1px solid var(--border);
-    color: var(--text); border-radius: var(--radius); padding: 6px 10px; font-size: 0.8rem;
-  }
-  .snapshot-row input::placeholder { color: var(--text-muted); }
-  .snapshot-row input:focus { outline: none; border-color: var(--accent); }
-
   /* Toast */
   .toast {
     position: fixed; bottom: 24px; right: 24px;
@@ -356,6 +347,28 @@
     font-size: 0.9rem; padding: 2px 5px; border-radius: 3px; flex-shrink: 0;
   }
   .score-label-row .remove-btn:hover { color: var(--red); background: var(--surface2); }
+
+  /* ── Members modal ── */
+  .members-list { display: flex; flex-direction: column; gap: 4px; }
+  .member-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; background: var(--surface2);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    font-size: 0.82rem;
+  }
+  .member-name { flex: 1; font-weight: 500; }
+  .member-role {
+    font-size: 0.68rem; padding: 1px 7px; border-radius: 10px; font-weight: 600;
+  }
+  .member-role.owner { background: var(--bg-yellow); color: var(--yellow); }
+  .member-role.editor { background: var(--surface); border: 1px solid var(--border); color: var(--text-muted); }
+  .add-member-row { display: flex; gap: 6px; }
+  .add-member-row input {
+    flex: 1; background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); border-radius: var(--radius); padding: 6px 10px; font-size: 0.8rem;
+  }
+  .add-member-row input::placeholder { color: var(--text-muted); }
+  .add-member-row input:focus { outline: none; border-color: var(--accent); }
 
   /* ── Share modal ── */
   .share-url-row { display: flex; gap: 6px; margin-top: 10px; }
@@ -422,8 +435,8 @@
     <div class="topbar-actions">
       <span id="peersIndicator" style="display:flex;align-items:center;gap:4px;margin-right:4px"></span>
       <span class="save-indicator" id="saveIndicator">&#8212;</span>
-      <button class="btn btn-ghost btn-sm" id="snapshotBtn" onclick="openSnapshotDialog()" style="display:none">&#128247; Snapshot</button>
       <button class="btn btn-ghost btn-sm" id="historyBtn" onclick="openHistory()" style="display:none">&#128336; History</button>
+      <button class="btn btn-ghost btn-sm" id="membersBtn" onclick="openMembersModal()" style="display:none">&#128101; Members</button>
       <button class="btn btn-primary btn-sm" id="saveBtn" onclick="saveRebuttal()">&#8593; Save</button>
       <button class="btn btn-ghost btn-sm" onclick="exportAll()">Export</button>
       <button class="btn btn-ghost btn-sm" id="shareBtn" onclick="openShareModal()" style="display:none">&#128279; Share</button>
@@ -492,6 +505,27 @@
   </div>
 </div>
 
+<!-- Members modal -->
+<div class="modal-overlay" id="membersModal" style="display:none">
+  <div class="modal" style="max-width:420px">
+    <h3>&#128101; Members</h3>
+    <div class="modal-body" id="membersBody" style="margin-top:4px">
+      <div style="color:var(--text-muted);font-size:0.82rem;text-align:center;padding:24px">Loading…</div>
+    </div>
+    <div id="addMemberSection" style="display:none;margin-top:14px">
+      <div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:6px">Add Member</div>
+      <div class="add-member-row">
+        <input id="addMemberUsername" type="text" placeholder="Username" onkeydown="if(event.key==='Enter')addMember()">
+        <button class="btn btn-primary btn-sm" onclick="addMember()">Add</button>
+      </div>
+      <p id="addMemberError" style="color:var(--red);font-size:0.75rem;margin-top:6px;display:none"></p>
+    </div>
+    <div class="modal-actions" style="margin-top:12px">
+      <button class="btn btn-ghost" onclick="document.getElementById('membersModal').style.display='none'">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- Export modal -->
 <div class="modal-overlay" id="exportModal" style="display:none">
   <div class="modal modal-lg">
@@ -504,20 +538,6 @@
   </div>
 </div>
 
-<!-- Snapshot dialog -->
-<div class="modal-overlay" id="snapshotModal" style="display:none">
-  <div class="modal" style="max-width:420px">
-    <h3>&#128247; Save Snapshot</h3>
-    <p style="font-size:0.8rem;color:var(--text-muted)">Save a named checkpoint you can restore later.</p>
-    <div class="snapshot-row">
-      <input id="snapshotNoteInput" placeholder="Label (e.g. 'Before major edit', 'v1 draft')">
-    </div>
-    <div class="modal-actions">
-      <button class="btn btn-ghost" onclick="document.getElementById('snapshotModal').style.display='none'">Cancel</button>
-      <button class="btn btn-primary" onclick="saveSnapshot()">Save Snapshot</button>
-    </div>
-  </div>
-</div>
 
 <!-- History modal -->
 <div class="modal-overlay" id="historyModal" style="display:none">
@@ -651,6 +671,7 @@ async function initAuth() {
   skipAuth = config.skipAuth;
 
   if (skipAuth) {
+    currentUsername = 'dev';
     document.getElementById('userName').textContent = 'dev';
     document.getElementById('userChip').style.display = 'flex';
     return;
@@ -665,6 +686,7 @@ async function initAuth() {
   }
 
   const { username } = await me.json();
+  currentUsername = username;
   document.getElementById('userName').textContent = username;
   document.getElementById('userChip').style.display = 'flex';
 }
@@ -686,6 +708,8 @@ let state = {
 };
 
 let currentRebuttalId = null;
+let currentUsername = null;
+let currentUserIsOwner = false;
 let isDirty = false;
 let autoSaveTimer = null;
 let previewSnapshotId = null;
@@ -1101,9 +1125,9 @@ function updateSaveIndicator() {
 
 function updateHistoryButtons() {
   const show = !!currentRebuttalId;
-  document.getElementById('snapshotBtn').style.display = show ? '' : 'none';
   document.getElementById('historyBtn').style.display = show ? '' : 'none';
   document.getElementById('shareBtn').style.display = show ? '' : 'none';
+  document.getElementById('membersBtn').style.display = show ? '' : 'none';
 }
 
 // ── Share ─────────────────────────────────────────────────────────────────────
@@ -1130,26 +1154,64 @@ function copyShareUrl() {
   navigator.clipboard.writeText(val).then(() => toast('Link copied!'));
 }
 
-// ── Snapshots ───────────────────────────────────────────────────────────────
-function openSnapshotDialog() {
-  document.getElementById('snapshotNoteInput').value = '';
-  document.getElementById('snapshotModal').style.display = 'flex';
-  setTimeout(() => document.getElementById('snapshotNoteInput').focus(), 50);
-}
-
-async function saveSnapshot() {
-  if (!currentRebuttalId) { toast('Save the rebuttal first', true); return; }
-  // First persist current state, then snapshot
-  await saveRebuttal();
-  const note = document.getElementById('snapshotNoteInput').value.trim();
+// ── Members ──────────────────────────────────────────────────────────────────
+async function openMembersModal() {
+  if (!currentRebuttalId) return;
+  document.getElementById('membersModal').style.display = 'flex';
+  document.getElementById('membersBody').innerHTML =
+    '<div style="color:var(--text-muted);font-size:0.82rem;text-align:center;padding:24px">Loading…</div>';
+  document.getElementById('addMemberSection').style.display = 'none';
+  document.getElementById('addMemberError').style.display = 'none';
   try {
-    await api('POST', `/api/rebuttals/${currentRebuttalId}/history`, { note });
-    document.getElementById('snapshotModal').style.display = 'none';
-    toast('Snapshot saved');
+    const members = await api('GET', `/api/rebuttals/${currentRebuttalId}/members`);
+    currentUserIsOwner = members.some(m => m.username === currentUsername && m.role === 'owner');
+    document.getElementById('addMemberSection').style.display = currentUserIsOwner ? '' : 'none';
+    document.getElementById('membersBody').innerHTML = renderMembersList(members);
   } catch (e) {
-    toast('Snapshot failed: ' + e.message, true);
+    document.getElementById('membersBody').innerHTML =
+      `<p style="color:var(--red);font-size:0.82rem">${escHtml(e.message)}</p>`;
   }
 }
+
+function renderMembersList(members) {
+  if (!members.length) return '<p style="color:var(--text-muted);font-size:0.82rem;text-align:center;padding:16px">No members.</p>';
+  return `<div class="members-list">${members.map(m => `
+    <div class="member-row">
+      <span class="member-name">${escHtml(m.username)}</span>
+      <span class="member-role ${m.role}">${m.role}</span>
+      ${currentUserIsOwner && m.role !== 'owner'
+        ? `<button class="btn btn-danger btn-sm" style="padding:2px 8px;font-size:0.72rem" onclick="removeMember('${escHtml(m.user_id)}')">Remove</button>`
+        : ''}
+    </div>`).join('')}</div>`;
+}
+
+async function addMember() {
+  const input = document.getElementById('addMemberUsername');
+  const errEl = document.getElementById('addMemberError');
+  const username = input.value.trim();
+  errEl.style.display = 'none';
+  if (!username) return;
+  try {
+    await api('POST', `/api/rebuttals/${currentRebuttalId}/members`, { username });
+    input.value = '';
+    const members = await api('GET', `/api/rebuttals/${currentRebuttalId}/members`);
+    document.getElementById('membersBody').innerHTML = renderMembersList(members);
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.style.display = '';
+  }
+}
+
+async function removeMember(userId) {
+  try {
+    await api('DELETE', `/api/rebuttals/${currentRebuttalId}/members/${userId}`);
+    const members = await api('GET', `/api/rebuttals/${currentRebuttalId}/members`);
+    document.getElementById('membersBody').innerHTML = renderMembersList(members);
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
 
 async function openHistory() {
   if (!currentRebuttalId) return;
@@ -1168,7 +1230,7 @@ async function openHistory() {
 function renderHistoryList(list) {
   const body = document.getElementById('historyBody');
   if (!list.length) {
-    body.innerHTML = '<div style="color:var(--text-muted);font-size:0.82rem;text-align:center;padding:24px">No snapshots yet. Use "Snapshot" to save checkpoints.</div>';
+    body.innerHTML = '<div style="color:var(--text-muted);font-size:0.82rem;text-align:center;padding:24px">No history yet.</div>';
     return;
   }
   body.innerHTML = `<div class="history-list">${list.map(h => `
@@ -1519,7 +1581,7 @@ function cycleStatus(rvId, pointId) {
   markDirty();
   renderSidebar();
   const block = document.getElementById(`point_${pointId}`);
-  if (block) block.outerHTML = renderPoint(rvId, p);
+  if (block) block.outerHTML = renderPoint(rvId, rvIdx, p, ptIdx);
   refreshCharInfo(rvId);
 }
 
@@ -1582,16 +1644,12 @@ function copyExport() {
 }
 
 // ── Close modals on overlay click ────────────────────────────────────────────
-['exportModal','snapshotModal','historyModal','previewModal','shareModal'].forEach(id => {
+['exportModal','historyModal','previewModal','shareModal','membersModal'].forEach(id => {
   document.getElementById(id).addEventListener('click', function(e) {
     if (e.target === this) this.style.display = 'none';
   });
 });
 
-// Snapshot enter key
-document.getElementById('snapshotNoteInput').addEventListener('keydown', e => {
-  if (e.key === 'Enter') saveSnapshot();
-});
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 async function initMain() {

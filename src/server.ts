@@ -114,7 +114,8 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     username   TEXT    NOT NULL UNIQUE COLLATE NOCASE,
-    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT    NOT NULL DEFAULT (datetime('now')),
+    is_admin   INTEGER NOT NULL DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS rebuttals (
@@ -159,6 +160,23 @@ db.exec(`
 // Migrate: add owner_id column to existing tables if missing
 try { db.exec(`ALTER TABLE rebuttals ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''`); } catch {}
 
+// Migrate: add is_admin column to users
+try { db.exec(`ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0`); } catch {}
+
+// Migrate: backfill all existing users as editors on all rebuttals they're not yet a member of
+try {
+  db.exec(`
+    INSERT OR IGNORE INTO rebuttal_members (rebuttal_id, user_id, role)
+    SELECT r.id, CAST(u.id AS TEXT), 'editor'
+    FROM rebuttals r
+    CROSS JOIN users u
+    WHERE NOT EXISTS (
+      SELECT 1 FROM rebuttal_members m
+      WHERE m.rebuttal_id = r.id AND m.user_id = CAST(u.id AS TEXT)
+    )
+  `);
+} catch {}
+
 // Migrate: drop password_hash from users (SQLite 3.35+); fall back to full table recreation
 try {
   db.exec(`ALTER TABLE users DROP COLUMN password_hash`);
@@ -168,9 +186,10 @@ try {
       db.exec(`CREATE TABLE IF NOT EXISTS users_new (
         id         INTEGER PRIMARY KEY AUTOINCREMENT,
         username   TEXT    NOT NULL UNIQUE COLLATE NOCASE,
-        created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+        created_at TEXT    NOT NULL DEFAULT (datetime('now')),
+        is_admin   INTEGER NOT NULL DEFAULT 0
       )`);
-      db.exec(`INSERT OR IGNORE INTO users_new (id, username, created_at) SELECT id, username, created_at FROM users`);
+      db.exec(`INSERT OR IGNORE INTO users_new (id, username, created_at, is_admin) SELECT id, username, created_at, COALESCE(is_admin, 0) FROM users`);
       db.exec(`DROP TABLE users`);
       db.exec(`ALTER TABLE users_new RENAME TO users`);
     })();
@@ -179,8 +198,15 @@ try {
 
 // ── Prepared statements ──────────────────────────────────────────────────────
 const stmts = {
-  // All authenticated users see all projects — ownership only gates deletion
+  // Only rebuttals the user is a member of
   listRebuttals: db.prepare(`
+    SELECT r.id, r.title, r.venue, r.owner_id, r.created_at, r.updated_at
+    FROM rebuttals r
+    JOIN rebuttal_members m ON m.rebuttal_id = r.id AND m.user_id = @uid
+    ORDER BY r.updated_at DESC
+  `),
+
+  listAllRebuttals: db.prepare(`
     SELECT id, title, venue, owner_id, created_at, updated_at
     FROM rebuttals
     ORDER BY updated_at DESC
@@ -188,8 +214,8 @@ const stmts = {
 
   getRebuttal: db.prepare(`SELECT * FROM rebuttals WHERE id = ?`),
 
-  // Any authenticated user can access any rebuttal
-  canAccess: db.prepare(`SELECT 1 FROM rebuttals WHERE id = @rid`),
+  // Access requires membership
+  canAccess: db.prepare(`SELECT 1 FROM rebuttal_members WHERE rebuttal_id = @rid AND user_id = @uid`),
 
   isOwner: db.prepare(`
     SELECT 1 FROM rebuttal_members
@@ -200,9 +226,16 @@ const stmts = {
   updateRebuttal:  db.prepare(`UPDATE rebuttals SET title=@title, venue=@venue, data=@data, updated_at=datetime('now') WHERE id=@id`),
   deleteRebuttal:  db.prepare(`DELETE FROM rebuttals WHERE id = ?`),
 
-  insertMember:    db.prepare(`INSERT OR IGNORE INTO rebuttal_members (rebuttal_id, user_id, role) VALUES (@rebuttal_id, @user_id, @role)`),
-  getMembers:      db.prepare(`SELECT user_id, role FROM rebuttal_members WHERE rebuttal_id = ?`),
-  removeMember:    db.prepare(`DELETE FROM rebuttal_members WHERE rebuttal_id = @rid AND user_id = @uid`),
+  insertMember:           db.prepare(`INSERT OR IGNORE INTO rebuttal_members (rebuttal_id, user_id, role) VALUES (@rebuttal_id, @user_id, @role)`),
+  getMembersWithNames:    db.prepare(`
+    SELECT m.user_id, m.role, COALESCE(u.username, m.user_id) AS username
+    FROM rebuttal_members m
+    LEFT JOIN users u ON CAST(u.id AS TEXT) = m.user_id
+    WHERE m.rebuttal_id = ?
+    ORDER BY CASE m.role WHEN 'owner' THEN 0 ELSE 1 END, u.username
+  `),
+  getUserByUsername:      db.prepare(`SELECT id, username FROM users WHERE username = ? COLLATE NOCASE`),
+  removeMember:           db.prepare(`DELETE FROM rebuttal_members WHERE rebuttal_id = @rid AND user_id = @uid`),
 
   insertHistory:   db.prepare(`INSERT INTO history (rebuttal_id, note, data) VALUES (@rebuttal_id, @note, @data)`),
   listHistory:     db.prepare(`SELECT id, rebuttal_id, snapshot_at, note FROM history WHERE rebuttal_id=? ORDER BY snapshot_at DESC`),
@@ -214,6 +247,8 @@ const stmts = {
     )
   `),
 
+  isAdmin:         db.prepare(`SELECT 1 FROM users WHERE id = ? AND is_admin = 1`),
+
   insertInvite:    db.prepare(`INSERT INTO invites (token, rebuttal_id, created_by, expires_at) VALUES (@token, @rebuttal_id, @created_by, @expires_at)`),
   getInvite:       db.prepare(`SELECT * FROM invites WHERE token = ?`),
   markInviteUsed:  db.prepare(`UPDATE invites SET used = 1 WHERE token = ?`),
@@ -221,6 +256,11 @@ const stmts = {
 };
 
 const HISTORY_KEEP = 50;
+
+// Returns true if uid may access rebId (member or admin).
+function hasAccess(uid: string, rebId: number): boolean {
+  return !!(stmts.isAdmin.get(uid) || stmts.canAccess.get({ rid: rebId, uid }));
+}
 
 // ── Live state (in-memory per open rebuttal) ─────────────────────────────────
 const liveState = new Map<number, RebuttalData>();
@@ -408,15 +448,20 @@ app.get('/api/auth/me', (req, res) => {
 });
 
 // ── API: Rebuttals ────────────────────────────────────────────────────────────
-app.get('/api/rebuttals', requireUser, (_req, res) => {
-  res.json(stmts.listRebuttals.all());
+app.get('/api/rebuttals', requireUser, (req, res) => {
+  const uid = getUserId(req);
+  if (SKIP_AUTH || stmts.isAdmin.get(uid)) {
+    res.json(stmts.listAllRebuttals.all());
+  } else {
+    res.json(stmts.listRebuttals.all({ uid }));
+  }
 });
 
 app.get('/api/rebuttals/:id', requireUser, (req, res) => {
   const rebId = parseInt(req.params.id as string);
   const uid = getUserId(req);
 
-  if (!SKIP_AUTH && !stmts.canAccess.get({ rid: rebId })) {
+  if (!SKIP_AUTH && !hasAccess(uid, rebId)) {
     res.status(403).json({ error: 'Forbidden' }); return;
   }
 
@@ -444,7 +489,7 @@ app.put('/api/rebuttals/:id', requireUser, (req, res) => {
   const rebId = parseInt(req.params.id as string);
   const uid = getUserId(req);
 
-  if (!SKIP_AUTH && !stmts.canAccess.get({ rid: rebId })) {
+  if (!SKIP_AUTH && !hasAccess(uid, rebId)) {
     res.status(403).json({ error: 'Forbidden' }); return;
   }
 
@@ -482,7 +527,8 @@ app.delete('/api/rebuttals/:id', requireUser, (req, res) => {
   const rebId = parseInt(req.params.id as string);
   const uid = getUserId(req);
 
-  if (!SKIP_AUTH && !stmts.isOwner.get({ rid: rebId, uid })) {
+  const canDelete = SKIP_AUTH || stmts.isOwner.get({ rid: rebId, uid }) || stmts.isAdmin.get(uid);
+  if (!canDelete) {
     res.status(403).json({ error: 'Only the owner can delete' }); return;
   }
 
@@ -496,7 +542,7 @@ app.delete('/api/rebuttals/:id', requireUser, (req, res) => {
 app.get('/api/rebuttals/:id/history', requireUser, (req, res) => {
   const rebId = parseInt(req.params.id as string);
   const uid = getUserId(req);
-  if (!SKIP_AUTH && !stmts.canAccess.get({ rid: rebId })) {
+  if (!SKIP_AUTH && !hasAccess(uid, rebId)) {
     res.status(403).json({ error: 'Forbidden' }); return;
   }
   res.json(stmts.listHistory.all(rebId));
@@ -511,7 +557,7 @@ app.get('/api/history/:snapshotId', requireUser, (req, res) => {
 app.post('/api/rebuttals/:id/history', requireUser, (req, res) => {
   const rebId = parseInt(req.params.id as string);
   const uid = getUserId(req);
-  if (!SKIP_AUTH && !stmts.canAccess.get({ rid: rebId })) {
+  if (!SKIP_AUTH && !hasAccess(uid, rebId)) {
     res.status(403).json({ error: 'Forbidden' }); return;
   }
   const existing = stmts.getRebuttal.get(rebId) as RebuttalRow | undefined;
@@ -532,13 +578,49 @@ app.delete('/api/history/:snapshotId', requireUser, (req, res) => {
   res.json({ ok: true });
 });
 
+// ── API: Members ─────────────────────────────────────────────────────────────
+app.get('/api/rebuttals/:id/members', requireUser, (req, res) => {
+  const rebId = parseInt(req.params.id as string);
+  const uid = getUserId(req);
+  if (!SKIP_AUTH && !hasAccess(uid, rebId)) {
+    res.status(403).json({ error: 'Forbidden' }); return;
+  }
+  res.json(stmts.getMembersWithNames.all(rebId));
+});
+
+app.post('/api/rebuttals/:id/members', requireUser, (req, res) => {
+  const rebId = parseInt(req.params.id as string);
+  const uid = getUserId(req);
+  if (!SKIP_AUTH && !stmts.isOwner.get({ rid: rebId, uid })) {
+    res.status(403).json({ error: 'Only the owner can manage members' }); return;
+  }
+  const { username } = req.body as { username?: string };
+  if (!username) { res.status(400).json({ error: 'username required' }); return; }
+  const user = stmts.getUserByUsername.get(username) as { id: number; username: string } | undefined;
+  if (!user) { res.status(404).json({ error: 'User not found' }); return; }
+  stmts.insertMember.run({ rebuttal_id: rebId, user_id: String(user.id), role: 'editor' });
+  res.status(201).json({ user_id: String(user.id), username: user.username, role: 'editor' });
+});
+
+app.delete('/api/rebuttals/:id/members/:userId', requireUser, (req, res) => {
+  const rebId = parseInt(req.params.id as string);
+  const uid = getUserId(req);
+  const targetUid = req.params.userId as string;
+  if (!SKIP_AUTH && !stmts.isOwner.get({ rid: rebId, uid })) {
+    res.status(403).json({ error: 'Only the owner can manage members' }); return;
+  }
+  if (targetUid === uid) { res.status(400).json({ error: 'Cannot remove yourself' }); return; }
+  stmts.removeMember.run({ rid: rebId, uid: targetUid });
+  res.json({ ok: true });
+});
+
 // ── API: Invites ──────────────────────────────────────────────────────────────
 // Create an invite link for a rebuttal
 app.post('/api/rebuttals/:id/invite', requireUser, (req, res) => {
   const rebId = parseInt(req.params.id as string);
   const uid = getUserId(req);
 
-  if (!SKIP_AUTH && !stmts.canAccess.get({ rid: rebId })) {
+  if (!SKIP_AUTH && !hasAccess(uid, rebId)) {
     res.status(403).json({ error: 'Forbidden' }); return;
   }
 
