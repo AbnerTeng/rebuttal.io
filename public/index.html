@@ -397,7 +397,7 @@
     <input id="authUsername" type="text" placeholder="Username" autocomplete="username"
       style="width:100%;padding:8px 12px;border-radius:6px;border:1px solid var(--border);
              background:var(--surface2);color:var(--text);font-size:0.9rem;margin-bottom:8px;box-sizing:border-box">
-    <input id="authPassword" type="password" placeholder="Password" autocomplete="current-password"
+    <input id="authInviteCode" type="password" placeholder="Invitation Code" autocomplete="off"
       style="width:100%;padding:8px 12px;border-radius:6px;border:1px solid var(--border);
              background:var(--surface2);color:var(--text);font-size:0.9rem;margin-bottom:12px;box-sizing:border-box">
     <p id="authError" style="color:var(--red);font-size:0.78rem;margin-bottom:10px;display:none"></p>
@@ -610,7 +610,6 @@ function toggleAuthMode(e) {
   document.getElementById('authSubmitBtn').textContent = isSignup ? 'Sign up' : 'Sign in';
   document.getElementById('authSwitchText').textContent = isSignup ? 'Already have an account?' : "Don't have an account?";
   document.getElementById('authSwitchLink').textContent = isSignup ? 'Sign in' : 'Sign up';
-  document.getElementById('authPassword').autocomplete = isSignup ? 'new-password' : 'current-password';
   document.getElementById('authError').style.display = 'none';
 }
 
@@ -622,8 +621,8 @@ function showAuthError(msg) {
 
 async function submitAuth() {
   const username = document.getElementById('authUsername').value.trim();
-  const password = document.getElementById('authPassword').value;
-  if (!username || !password) { showAuthError('Please fill in all fields.'); return; }
+  const inviteCode = document.getElementById('authInviteCode').value;
+  if (!username || !inviteCode) { showAuthError('Please fill in all fields.'); return; }
 
   const btn = document.getElementById('authSubmitBtn');
   btn.disabled = true;
@@ -633,7 +632,7 @@ async function submitAuth() {
     const res = await fetch(`/api/auth/${authMode}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username, inviteCode }),
     });
     const data = await res.json();
     if (!res.ok) { showAuthError(data.error ?? 'Something went wrong.'); return; }

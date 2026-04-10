@@ -5,7 +5,6 @@ import path from 'path';
 import crypto from 'crypto';
 import Database from 'better-sqlite3';
 import { Server } from 'socket.io';
-import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import cookieParser from 'cookie-parser';
 import type {
@@ -27,7 +26,6 @@ const MOCK_USERNAME = 'dev';
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'rebuttals.db');
 const INVITE_TTL_DAYS = 7;
-const BCRYPT_ROUNDS = 12;
 const SESSION_TTL_DAYS = 7;
 const COOKIE_NAME = 'session';
 
@@ -36,6 +34,22 @@ const JWT_SECRET: string = process.env.JWT_SECRET ?? (() => {
   console.warn('⚠️  JWT_SECRET not set — sessions will reset on restart. Add JWT_SECRET to .env');
   return crypto.randomBytes(32).toString('hex');
 })();
+
+// Site-wide invitation code — required to sign up or log in.
+const INVITE_CODE: string = process.env.INVITE_CODE ?? (() => {
+  console.warn('⚠️  INVITE_CODE not set — all auth attempts will be rejected. Add INVITE_CODE to .env');
+  return '';
+})();
+
+/** Timing-safe check of the invitation code. */
+function checkInviteCode(code: string): boolean {
+  if (!INVITE_CODE || code.length !== INVITE_CODE.length) return false;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(code), Buffer.from(INVITE_CODE));
+  } catch {
+    return false;
+  }
+}
 
 // ── Express + HTTP server ────────────────────────────────────────────────────
 const app = express();
@@ -98,10 +112,9 @@ db.pragma('foreign_keys = ON');
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    username      TEXT    NOT NULL UNIQUE COLLATE NOCASE,
-    password_hash TEXT    NOT NULL,
-    created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    username   TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
   );
 
   CREATE TABLE IF NOT EXISTS rebuttals (
@@ -145,6 +158,24 @@ db.exec(`
 
 // Migrate: add owner_id column to existing tables if missing
 try { db.exec(`ALTER TABLE rebuttals ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''`); } catch {}
+
+// Migrate: drop password_hash from users (SQLite 3.35+); fall back to full table recreation
+try {
+  db.exec(`ALTER TABLE users DROP COLUMN password_hash`);
+} catch {
+  try {
+    db.transaction(() => {
+      db.exec(`CREATE TABLE IF NOT EXISTS users_new (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        username   TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+        created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+      )`);
+      db.exec(`INSERT OR IGNORE INTO users_new (id, username, created_at) SELECT id, username, created_at FROM users`);
+      db.exec(`DROP TABLE users`);
+      db.exec(`ALTER TABLE users_new RENAME TO users`);
+    })();
+  } catch {}
+}
 
 // ── Prepared statements ──────────────────────────────────────────────────────
 const stmts = {
@@ -322,39 +353,31 @@ app.get('/api/config', (_req, res) => {
 // ── Auth routes ───────────────────────────────────────────────────────────────
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,30}$/;
 
-app.post('/api/auth/signup', async (req, res) => {
-  const { username, password } = req.body as { username?: string; password?: string };
-  if (!username || !password) { res.status(400).json({ error: 'Username and password required' }); return; }
+app.post('/api/auth/signup', (req, res) => {
+  const { username, inviteCode } = req.body as { username?: string; inviteCode?: string };
+  if (!username || !inviteCode) { res.status(400).json({ error: 'Username and invitation code required' }); return; }
   if (!USERNAME_RE.test(username)) {
     res.status(400).json({ error: 'Username must be 3–30 characters: letters, numbers, underscores only' }); return;
   }
-  if (password.length < 8) { res.status(400).json({ error: 'Password must be at least 8 characters' }); return; }
-  if (password.length > 72) { res.status(400).json({ error: 'Password too long' }); return; }
+  if (!checkInviteCode(inviteCode)) { res.status(401).json({ error: 'Invalid invitation code' }); return; }
 
   const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(username);
   if (existing) { res.status(409).json({ error: 'Username already taken' }); return; }
 
-  const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-  const result = db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)').run(username, hash);
-  const userId = String(result.lastInsertRowid);
-
-  const token = signSession(userId, username);
+  const result = db.prepare('INSERT INTO users (username) VALUES (?)').run(username);
+  const token = signSession(String(result.lastInsertRowid), username);
   setSessionCookie(res, token);
   res.status(201).json({ username });
 });
 
-app.post('/api/auth/login', async (req, res) => {
-  const { username, password } = req.body as { username?: string; password?: string };
-  if (!username || !password) { res.status(400).json({ error: 'Username and password required' }); return; }
+app.post('/api/auth/login', (req, res) => {
+  const { username, inviteCode } = req.body as { username?: string; inviteCode?: string };
+  if (!username || !inviteCode) { res.status(400).json({ error: 'Username and invitation code required' }); return; }
+  if (!checkInviteCode(inviteCode)) { res.status(401).json({ error: 'Invalid invitation code' }); return; }
 
-  const row = db.prepare('SELECT id, password_hash FROM users WHERE username = ?').get(username) as
-    { id: number; password_hash: string } | undefined;
-
-  // Always run bcrypt compare to prevent timing attacks
-  const hash = row?.password_hash ?? '$2b$12$invalidhashpadding000000000000000000000000000000000000000';
-  const match = await bcrypt.compare(password, hash);
-
-  if (!row || !match) { res.status(401).json({ error: 'Invalid username or password' }); return; }
+  const row = db.prepare('SELECT id FROM users WHERE username = ?').get(username) as
+    { id: number } | undefined;
+  if (!row) { res.status(401).json({ error: 'User not found' }); return; }
 
   const token = signSession(String(row.id), username);
   setSessionCookie(res, token);
@@ -577,7 +600,7 @@ app.get('/invite/:token', (req, res) => {
   <div id="loginForm">
     <p>Sign in to join this rebuttal.</p>
     <input id="username" type="text" placeholder="Username" autocomplete="username">
-    <input id="password" type="password" placeholder="Password" autocomplete="current-password">
+    <input id="inviteCode" type="password" placeholder="Invitation Code" autocomplete="off">
     <p id="err" class="msg err" style="display:none"></p>
     <button onclick="doAccept()">Join</button>
     <p class="msg">No account? <a href="/" style="color:#6c7ef8">Sign up first</a>, then use the invite link again.</p>
@@ -589,14 +612,14 @@ const INVITE_TOKEN = ${JSON.stringify(inviteToken)};
 
 async function doAccept() {
   const username = document.getElementById('username').value.trim();
-  const password = document.getElementById('password').value;
+  const inviteCode = document.getElementById('inviteCode').value;
   const errEl = document.getElementById('err');
   errEl.style.display = 'none';
 
   // Login first
   const loginRes = await fetch('/api/auth/login', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ username, inviteCode }),
   });
   if (!loginRes.ok) {
     const d = await loginRes.json();
@@ -637,7 +660,7 @@ fetch('/api/auth/me').then(async r => {
   }
 });
 
-document.getElementById('password').addEventListener('keydown', e => {
+document.getElementById('inviteCode').addEventListener('keydown', e => {
   if (e.key === 'Enter') doAccept();
 });
 </script>
